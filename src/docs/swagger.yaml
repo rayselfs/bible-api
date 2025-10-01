@@ -1,0 +1,159 @@
+basePath: /
+definitions:
+  models.ApiResponseVerse:
+    properties:
+      book:
+        example: Genesis
+        type: string
+      chapter:
+        example: 1
+        type: integer
+      text:
+        example: In the beginning God created the heaven and the earth.
+        type: string
+      verse:
+        example: 1
+        type: integer
+    type: object
+  models.Locales:
+    properties:
+      code:
+        example: en
+        type: string
+      name:
+        example: English
+        type: string
+    type: object
+  models.Versions:
+    properties:
+      code:
+        type: string
+      id:
+        type: integer
+      locale:
+        $ref: '#/definitions/models.Locales'
+      name:
+        type: string
+    type: object
+  server.ErrorResponse:
+    properties:
+      error:
+        example: error message
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: rayselfs@alive.org.tw
+    name: API Support
+    url: https://github.com/your-repo
+  description: This is a sample server for a Bible API system, powered by Gin and
+    GORM.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: http://swagger.io/terms/
+  title: Bible System API
+  version: "1.0"
+paths:
+  /api/versions/{version}/books/{book}/chapters/{chapter}:
+    get:
+      consumes:
+      - application/json
+      description: 根據指定的譯本、書卷和章數，取得完整的章節內容
+      parameters:
+      - description: 譯本代碼 (e.g., cuv, kjv)
+        in: path
+        name: version
+        required: true
+        type: string
+      - description: 書卷名稱或縮寫 (e.g., Genesis, Gen)
+        in: path
+        name: book
+        required: true
+        type: string
+      - description: 章數
+        in: path
+        name: chapter
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 成功取得章節內容
+          schema:
+            items:
+              $ref: '#/definitions/models.ApiResponseVerse'
+            type: array
+        "400":
+          description: 輸入參數無效
+          schema:
+            $ref: '#/definitions/server.ErrorResponse'
+        "404":
+          description: 找不到指定的章節
+          schema:
+            $ref: '#/definitions/server.ErrorResponse'
+        "500":
+          description: 伺服器內部錯誤
+          schema:
+            $ref: '#/definitions/server.ErrorResponse'
+      summary: 取得聖經章節
+      tags:
+      - Bible
+  /search:
+    get:
+      consumes:
+      - application/json
+      description: 在指定的譯本中，根據關鍵字搜尋相關經文
+      parameters:
+      - description: 譯本代碼 (e.g., cuv, kjv)
+        in: query
+        name: version
+        required: true
+        type: string
+      - description: 搜尋的關鍵字
+        in: query
+        name: q
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 成功取得搜尋結果
+          schema:
+            items:
+              $ref: '#/definitions/models.ApiResponseVerse'
+            type: array
+        "400":
+          description: 輸入參數無效
+          schema:
+            $ref: '#/definitions/server.ErrorResponse'
+        "500":
+          description: 伺服器內部錯誤
+          schema:
+            $ref: '#/definitions/server.ErrorResponse'
+      summary: 搜尋經文
+      tags:
+      - Bible
+  /versions:
+    get:
+      description: 列出系統中所有可用的聖經譯本及其代碼
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 成功取得譯本列表
+          schema:
+            items:
+              $ref: '#/definitions/models.Versions'
+            type: array
+        "500":
+          description: 伺服器內部錯誤
+          schema:
+            $ref: '#/definitions/server.ErrorResponse'
+      summary: 取得所有聖經譯本
+      tags:
+      - Bible
+swagger: "2.0"
