@@ -18,9 +18,9 @@
     "host": "localhost:8080",
     "basePath": "/",
     "paths": {
-        "/api/versions/{version}/books/{book}/chapters/{chapter}": {
-            "get": {
-                "description": "根據指定的譯本、書卷和章數，取得完整的章節內容",
+        "/api/bible/v1/search": {
+            "post": {
+                "description": "Use semantic search functionality to understand query meaning and return relevant verses",
                 "consumes": [
                     "application/json"
                 ],
@@ -30,54 +30,74 @@
                 "tags": [
                     "Bible"
                 ],
-                "summary": "取得聖經章節",
+                "summary": "Semantic search for Bible verses",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "譯本代碼 (e.g., cuv, kjv)",
-                        "name": "version",
-                        "in": "path",
-                        "required": true
+                        "description": "Search request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.SearchRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Search results",
+                        "schema": {
+                            "$ref": "#/definitions/models.SearchResponse"
+                        }
                     },
-                    {
-                        "type": "string",
-                        "description": "書卷名稱或縮寫 (e.g., Genesis, Gen)",
-                        "name": "book",
-                        "in": "path",
-                        "required": true
+                    "400": {
+                        "description": "Invalid request format",
+                        "schema": {
+                            "$ref": "#/definitions/server.ErrorResponse"
+                        }
                     },
+                    "500": {
+                        "description": "Search failed",
+                        "schema": {
+                            "$ref": "#/definitions/server.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/bible/v1/version/{version_id}": {
+            "get": {
+                "description": "Get all books, chapters and verses content for the specified version ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bible"
+                ],
+                "summary": "Get complete Bible content",
+                "parameters": [
                     {
                         "type": "integer",
-                        "description": "章數",
-                        "name": "chapter",
+                        "description": "Version ID",
+                        "name": "version_id",
                         "in": "path",
                         "required": true
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "成功取得章節內容",
+                        "description": "Successfully retrieved Bible content",
                         "schema": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/models.ApiResponseVerse"
-                            }
+                            "$ref": "#/definitions/models.BibleContentAPI"
                         }
                     },
                     "400": {
-                        "description": "輸入參數無效",
-                        "schema": {
-                            "$ref": "#/definitions/server.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "找不到指定的章節",
+                        "description": "Invalid input parameters",
                         "schema": {
                             "$ref": "#/definitions/server.ErrorResponse"
                         }
                     },
                     "500": {
-                        "description": "伺服器內部錯誤",
+                        "description": "Internal server error",
                         "schema": {
                             "$ref": "#/definitions/server.ErrorResponse"
                         }
@@ -85,82 +105,28 @@
                 }
             }
         },
-        "/search": {
+        "/api/bible/v1/versions": {
             "get": {
-                "description": "在指定的譯本中，根據關鍵字搜尋相關經文",
-                "consumes": [
-                    "application/json"
-                ],
+                "description": "List all available Bible versions in the system",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Bible"
                 ],
-                "summary": "搜尋經文",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "譯本代碼 (e.g., cuv, kjv)",
-                        "name": "version",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "搜尋的關鍵字",
-                        "name": "q",
-                        "in": "query",
-                        "required": true
-                    }
-                ],
+                "summary": "Get all Bible versions",
                 "responses": {
                     "200": {
-                        "description": "成功取得搜尋結果",
+                        "description": "Successfully retrieved version list",
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/models.ApiResponseVerse"
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "輸入參數無效",
-                        "schema": {
-                            "$ref": "#/definitions/server.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "伺服器內部錯誤",
-                        "schema": {
-                            "$ref": "#/definitions/server.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/versions": {
-            "get": {
-                "description": "列出系統中所有可用的聖經譯本及其代碼",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bible"
-                ],
-                "summary": "取得所有聖經譯本",
-                "responses": {
-                    "200": {
-                        "description": "成功取得譯本列表",
-                        "schema": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/models.Versions"
+                                "$ref": "#/definitions/models.VersionListItem"
                             }
                         }
                     },
                     "500": {
-                        "description": "伺服器內部錯誤",
+                        "description": "Internal server error",
                         "schema": {
                             "$ref": "#/definitions/server.ErrorResponse"
                         }
@@ -170,41 +136,147 @@
         }
     },
     "definitions": {
-        "models.ApiResponseVerse": {
+        "models.BibleContentAPI": {
+            "type": "object",
+            "properties": {
+                "books": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BibleContentBook"
+                    }
+                },
+                "version_code": {
+                    "type": "string"
+                },
+                "version_id": {
+                    "type": "integer"
+                },
+                "version_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.BibleContentBook": {
+            "type": "object",
+            "properties": {
+                "abbreviation": {
+                    "type": "string"
+                },
+                "chapters": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BibleContentChapter"
+                    }
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "number": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.BibleContentChapter": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "number": {
+                    "type": "integer"
+                },
+                "verses": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BibleContentVerse"
+                    }
+                }
+            }
+        },
+        "models.BibleContentVerse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "number": {
+                    "type": "integer"
+                },
+                "text": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.SearchRequest": {
+            "type": "object",
+            "required": [
+                "query"
+            ],
+            "properties": {
+                "query": {
+                    "type": "string"
+                },
+                "top_k": {
+                    "type": "integer"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.SearchResponse": {
+            "type": "object",
+            "properties": {
+                "duration": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "query": {
+                    "type": "string"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.SearchResult"
+                    }
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.SearchResult": {
             "type": "object",
             "properties": {
                 "book": {
-                    "type": "string",
-                    "example": "Genesis"
+                    "type": "integer"
                 },
                 "chapter": {
-                    "type": "integer",
-                    "example": 1
+                    "type": "integer"
+                },
+                "rank": {
+                    "type": "integer"
+                },
+                "score": {
+                    "type": "number"
                 },
                 "text": {
-                    "type": "string",
-                    "example": "In the beginning God created the heaven and the earth."
+                    "type": "string"
                 },
                 "verse": {
-                    "type": "integer",
-                    "example": 1
-                }
-            }
-        },
-        "models.Locales": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "example": "en"
+                    "type": "integer"
                 },
-                "name": {
-                    "type": "string",
-                    "example": "English"
+                "version": {
+                    "type": "string"
                 }
             }
         },
-        "models.Versions": {
+        "models.VersionListItem": {
             "type": "object",
             "properties": {
                 "code": {
@@ -212,9 +284,6 @@
                 },
                 "id": {
                     "type": "integer"
-                },
-                "locale": {
-                    "$ref": "#/definitions/models.Locales"
                 },
                 "name": {
                     "type": "string"

@@ -54,12 +54,12 @@ func main() {
 	log.Println("Migration run successfully")
 
 	store := models.NewStore(db)
-	api := server.NewAPI(store)
+	api := server.NewAPI(store, cfg.AISearchURL)
 	router := api.RegisterRoutes()
 
-	log.Println("Starting server on :8080")
-	log.Println("Swagger UI is available at http://localhost:8080/swagger/index.html")
-	if err := router.Run(":8080"); err != nil {
+	log.Printf("Starting server on :%s", cfg.ServerPort)
+	log.Printf("Swagger UI is available at http://localhost:%s/swagger/index.html", cfg.ServerPort)
+	if err := router.Run(":" + cfg.ServerPort); err != nil {
 		log.Fatalf("Could not start server: %s\n", err)
 	}
 }

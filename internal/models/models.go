@@ -1,6 +1,6 @@
 package models
 
-// Versions 對應 versions 資料表，儲存聖經版本資訊
+// Versions corresponds to versions table, stores Bible version information
 type Versions struct {
 	ID    uint    `gorm:"primaryKey" json:"id"`
 	Code  string  `gorm:"uniqueIndex;not null;size:20" json:"code"`
@@ -8,7 +8,7 @@ type Versions struct {
 	Books []Books `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE"`
 }
 
-// Books 對應 books 資料表，儲存聖經書卷資訊
+// Books corresponds to books table, stores Bible book information
 type Books struct {
 	ID           uint       `gorm:"primaryKey" json:"id"`
 	VersionID    uint       `gorm:"not null;index" json:"version_id"`
@@ -19,7 +19,7 @@ type Books struct {
 	Chapters     []Chapters `gorm:"foreignKey:BookID;constraint:OnDelete:CASCADE"`
 }
 
-// Chapters 對應 chapters 資料表，儲存每一章的獨立資訊
+// Chapters corresponds to chapters table, stores independent information for each chapter
 type Chapters struct {
 	ID     uint     `gorm:"primaryKey" json:"id"`
 	BookID uint     `gorm:"not null;index" json:"book_id"`
@@ -28,7 +28,7 @@ type Chapters struct {
 	Verses []Verses `gorm:"foreignKey:ChapterID;constraint:OnDelete:CASCADE"`
 }
 
-// Verses 對應 verses 資料表，儲存每一節的經文內容
+// Verses corresponds to verses table, stores verse content for each verse
 type Verses struct {
 	ID        uint     `gorm:"primaryKey" json:"id"`
 	ChapterID uint     `gorm:"not null;index" json:"chapter_id"`
@@ -37,14 +37,14 @@ type Verses struct {
 	Chapter   Chapters `gorm:"foreignKey:ChapterID;constraint:OnDelete:CASCADE"`
 }
 
-// VersionListItem 是版本列表項目
+// VersionListItem is a version list item
 type VersionListItem struct {
 	ID   uint   `json:"id"`
 	Code string `json:"code"`
 	Name string `json:"name"`
 }
 
-// BibleContentAPI 是取得全部經文的 API 回應結構
+// BibleContentAPI is the API response structure for getting complete Bible content
 type BibleContentAPI struct {
 	VersionID   uint               `json:"version_id"`
 	VersionCode string             `json:"version_code"`
@@ -52,7 +52,7 @@ type BibleContentAPI struct {
 	Books       []BibleContentBook `json:"books"`
 }
 
-// BibleContentBook 是經文內容中的書卷結構
+// BibleContentBook is the book structure in Bible content
 type BibleContentBook struct {
 	ID           uint                  `json:"id"`
 	Number       uint                  `json:"number"`
@@ -61,16 +61,43 @@ type BibleContentBook struct {
 	Chapters     []BibleContentChapter `json:"chapters"`
 }
 
-// BibleContentChapter 是經文內容中的章節結構
+// BibleContentChapter is the chapter structure in Bible content
 type BibleContentChapter struct {
 	ID     uint                `json:"id"`
 	Number uint                `json:"number"`
 	Verses []BibleContentVerse `json:"verses"`
 }
 
-// BibleContentVerse 是經文內容中的經節結構
+// BibleContentVerse is the verse structure in Bible content
 type BibleContentVerse struct {
 	ID     uint   `json:"id"`
 	Number int    `json:"number"`
 	Text   string `json:"text"`
+}
+
+// SearchRequest search request
+type SearchRequest struct {
+	Query   string `json:"query" binding:"required"`
+	TopK    int    `json:"top_k,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+// SearchResult search result
+type SearchResult struct {
+	Rank    int     `json:"rank"`
+	Score   float64 `json:"score"`
+	Text    string  `json:"text"`
+	Version string  `json:"version"`
+	Book    int     `json:"book"`
+	Chapter int     `json:"chapter"`
+	Verse   int     `json:"verse"`
+}
+
+// SearchResponse search response
+type SearchResponse struct {
+	Query    string         `json:"query"`
+	Results  []SearchResult `json:"results"`
+	Total    int            `json:"total"`
+	Duration string         `json:"duration,omitempty"`
+	Error    string         `json:"error,omitempty"`
 }

@@ -12,12 +12,13 @@ func (a *API) RegisterRoutes() *gin.Engine {
 		c.JSON(200, gin.H{
 			"status": "UP",
 		})
-	})
+	}).
+		GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
-	r.Group("/api/bible").
-		GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler)).
-		GET("/versions", a.handleGetAllVersions).
-		GET("/version/:version_id", a.handleGetVersionContent)
+	r.Group("/api/bible/v1").
+		GET("/versions", a.HandleGetAllVersions).
+		GET("/version/:version_id", a.HandleGetVersionContent).
+		POST("/search", a.HandleSearch)
 
 	return r
 }

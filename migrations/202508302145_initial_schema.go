@@ -7,15 +7,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// InitialSchema 是一個包含 ID 和遷移函式的結構
+// InitialSchema is a structure containing ID and migration functions
 var InitialSchema = &gormigrate.Migration{
-	// ID 必須是唯一的，通常使用時間戳
+	// ID must be unique, usually using timestamp
 	ID: "202508302145_INITIAL_SCHEMA",
 
-	// Migrate 是升級函式
+	// Migrate is the upgrade function
 	Migrate: func(tx *gorm.DB) error {
-		// 使用 GORM 的 AutoMigrate 建立初始資料表
-		// 注意順序：先建立父表，再建立子表
+		// Use GORM AutoMigrate to create initial tables
+		// Note order: create parent tables first, then child tables
 		return tx.AutoMigrate(
 			&models.Versions{},
 			&models.Books{},
@@ -24,10 +24,10 @@ var InitialSchema = &gormigrate.Migration{
 		)
 	},
 
-	// Rollback 是降級函式
+	// Rollback is the downgrade function
 	Rollback: func(tx *gorm.DB) error {
-		// DropTable 接受 interface{}，所以我們傳入模型的指標
-		// 注意 Drop 的順序與 Migrate 的順序相反，以處理外鍵約束
+		// DropTable accepts interface{}, so we pass model pointers
+		// Note Drop order is opposite to Migrate order to handle foreign key constraints
 		return tx.Migrator().DropTable(
 			&models.Verses{},
 			&models.Chapters{},

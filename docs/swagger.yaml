@@ -1,37 +1,102 @@
 basePath: /
 definitions:
-  models.ApiResponseVerse:
+  models.BibleContentAPI:
     properties:
-      book:
-        example: Genesis
+      books:
+        items:
+          $ref: '#/definitions/models.BibleContentBook'
+        type: array
+      version_code:
         type: string
-      chapter:
-        example: 1
+      version_id:
+        type: integer
+      version_name:
+        type: string
+    type: object
+  models.BibleContentBook:
+    properties:
+      abbreviation:
+        type: string
+      chapters:
+        items:
+          $ref: '#/definitions/models.BibleContentChapter'
+        type: array
+      id:
+        type: integer
+      name:
+        type: string
+      number:
+        type: integer
+    type: object
+  models.BibleContentChapter:
+    properties:
+      id:
+        type: integer
+      number:
+        type: integer
+      verses:
+        items:
+          $ref: '#/definitions/models.BibleContentVerse'
+        type: array
+    type: object
+  models.BibleContentVerse:
+    properties:
+      id:
+        type: integer
+      number:
         type: integer
       text:
-        example: In the beginning God created the heaven and the earth.
         type: string
-      verse:
-        example: 1
+    type: object
+  models.SearchRequest:
+    properties:
+      query:
+        type: string
+      top_k:
+        type: integer
+      version:
+        type: string
+    required:
+    - query
+    type: object
+  models.SearchResponse:
+    properties:
+      duration:
+        type: string
+      error:
+        type: string
+      query:
+        type: string
+      results:
+        items:
+          $ref: '#/definitions/models.SearchResult'
+        type: array
+      total:
         type: integer
     type: object
-  models.Locales:
+  models.SearchResult:
     properties:
-      code:
-        example: en
+      book:
+        type: integer
+      chapter:
+        type: integer
+      rank:
+        type: integer
+      score:
+        type: number
+      text:
         type: string
-      name:
-        example: English
+      verse:
+        type: integer
+      version:
         type: string
     type: object
-  models.Versions:
+  models.VersionListItem:
     properties:
       code:
         type: string
       id:
         type: integer
-      locale:
-        $ref: '#/definitions/models.Locales'
       name:
         type: string
     type: object
@@ -56,104 +121,82 @@ info:
   title: Bible System API
   version: "1.0"
 paths:
-  /api/versions/{version}/books/{book}/chapters/{chapter}:
-    get:
+  /api/bible/v1/search:
+    post:
       consumes:
       - application/json
-      description: 根據指定的譯本、書卷和章數，取得完整的章節內容
+      description: Use semantic search functionality to understand query meaning and
+        return relevant verses
       parameters:
-      - description: 譯本代碼 (e.g., cuv, kjv)
-        in: path
-        name: version
+      - description: Search request
+        in: body
+        name: request
         required: true
-        type: string
-      - description: 書卷名稱或縮寫 (e.g., Genesis, Gen)
+        schema:
+          $ref: '#/definitions/models.SearchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Search results
+          schema:
+            $ref: '#/definitions/models.SearchResponse'
+        "400":
+          description: Invalid request format
+          schema:
+            $ref: '#/definitions/server.ErrorResponse'
+        "500":
+          description: Search failed
+          schema:
+            $ref: '#/definitions/server.ErrorResponse'
+      summary: Semantic search for Bible verses
+      tags:
+      - Bible
+  /api/bible/v1/version/{version_id}:
+    get:
+      description: Get all books, chapters and verses content for the specified version
+        ID
+      parameters:
+      - description: Version ID
         in: path
-        name: book
-        required: true
-        type: string
-      - description: 章數
-        in: path
-        name: chapter
+        name: version_id
         required: true
         type: integer
       produces:
       - application/json
       responses:
         "200":
-          description: 成功取得章節內容
+          description: Successfully retrieved Bible content
           schema:
-            items:
-              $ref: '#/definitions/models.ApiResponseVerse'
-            type: array
+            $ref: '#/definitions/models.BibleContentAPI'
         "400":
-          description: 輸入參數無效
-          schema:
-            $ref: '#/definitions/server.ErrorResponse'
-        "404":
-          description: 找不到指定的章節
+          description: Invalid input parameters
           schema:
             $ref: '#/definitions/server.ErrorResponse'
         "500":
-          description: 伺服器內部錯誤
+          description: Internal server error
           schema:
             $ref: '#/definitions/server.ErrorResponse'
-      summary: 取得聖經章節
+      summary: Get complete Bible content
       tags:
       - Bible
-  /search:
+  /api/bible/v1/versions:
     get:
-      consumes:
-      - application/json
-      description: 在指定的譯本中，根據關鍵字搜尋相關經文
-      parameters:
-      - description: 譯本代碼 (e.g., cuv, kjv)
-        in: query
-        name: version
-        required: true
-        type: string
-      - description: 搜尋的關鍵字
-        in: query
-        name: q
-        required: true
-        type: string
+      description: List all available Bible versions in the system
       produces:
       - application/json
       responses:
         "200":
-          description: 成功取得搜尋結果
+          description: Successfully retrieved version list
           schema:
             items:
-              $ref: '#/definitions/models.ApiResponseVerse'
-            type: array
-        "400":
-          description: 輸入參數無效
-          schema:
-            $ref: '#/definitions/server.ErrorResponse'
-        "500":
-          description: 伺服器內部錯誤
-          schema:
-            $ref: '#/definitions/server.ErrorResponse'
-      summary: 搜尋經文
-      tags:
-      - Bible
-  /versions:
-    get:
-      description: 列出系統中所有可用的聖經譯本及其代碼
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 成功取得譯本列表
-          schema:
-            items:
-              $ref: '#/definitions/models.Versions'
+              $ref: '#/definitions/models.VersionListItem'
             type: array
         "500":
-          description: 伺服器內部錯誤
+          description: Internal server error
           schema:
             $ref: '#/definitions/server.ErrorResponse'
-      summary: 取得所有聖經譯本
+      summary: Get all Bible versions
       tags:
       - Bible
 swagger: "2.0"

@@ -1,0 +1,8 @@
+.data
+.DS_Store
+docs/
+.gitignore
+.git
+docker-compose.yml
+LICENSE
+README.md
