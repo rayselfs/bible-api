@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
 	"hhc/bible-api/internal/pkg/search"
 
@@ -91,14 +92,19 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 // @Failure      500     {object}  ErrorResponse    "Search failed"
 // @Router       /api/bible/v1/search [post]
 func (a *API) HandleSearch(c *gin.Context) {
+	appLogger := logger.GetAppLogger()
+	appLogger.Info("Processing search request")
+
 	var req models.SearchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		appLogger.Warnf("Invalid request format: %v", err)
 		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid request format"})
 		return
 	}
 
 	// Validate request
 	if strings.TrimSpace(req.Query) == "" {
+		appLogger.Warn("Empty query received")
 		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Query cannot be empty"})
 		return
 	}
@@ -108,9 +114,12 @@ func (a *API) HandleSearch(c *gin.Context) {
 		req.TopK = 10
 	}
 
+	appLogger.Infof("Executing search for query: '%s' (TopK: %d)", req.Query, req.TopK)
+
 	// Execute search
 	results, err := a.searchService.ExecuteSearch(req)
 	if err != nil {
+		appLogger.Errorf("Search execution failed: %v", err)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Search failed: %v", err)})
 		return
 	}
@@ -122,5 +131,6 @@ func (a *API) HandleSearch(c *gin.Context) {
 		Total:   len(results),
 	}
 
+	appLogger.Infof("Search completed successfully: %d results found", len(results))
 	c.JSON(http.StatusOK, response)
 }

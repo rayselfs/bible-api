@@ -1,13 +1,20 @@
 package server
 
 import (
+	"hhc/bible-api/internal/middleware"
+
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
 func (a *API) RegisterRoutes() *gin.Engine {
-	r := gin.Default()
+	r := gin.New()
+
+	// Use structured logging middleware
+	r.Use(gin.Recovery())
+	r.Use(middleware.LoggerMiddleware())
+
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status": "UP",

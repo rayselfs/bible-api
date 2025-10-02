@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
 )
 
@@ -77,7 +78,8 @@ func (s *Service) ExecuteSearch(req models.SearchRequest) ([]models.SearchResult
 	// Second step: AI semantic search
 	aiResults, err := s.executeAISearch(req)
 	if err != nil {
-		fmt.Println("execute ai search failed", err)
+		appLogger := logger.GetAppLogger()
+		appLogger.Errorf("AI search execution failed: %v", err)
 		return results, nil
 	}
 
@@ -113,7 +115,8 @@ func (s *Service) ExecuteSearch(req models.SearchRequest) ([]models.SearchResult
 
 // executeAISearch Execute AI search
 func (s *Service) executeAISearch(req models.SearchRequest) ([]models.SearchResult, error) {
-	fmt.Println("execute ai search")
+	appLogger := logger.GetAppLogger()
+	appLogger.Info("Executing AI search")
 
 	// Build request body
 	requestBody := AISearchRequest{
@@ -164,7 +167,7 @@ func (s *Service) executeAISearch(req models.SearchRequest) ([]models.SearchResu
 		})
 	}
 
-	fmt.Println("ai search results", results)
+	appLogger.Infof("AI search completed: %d results found", len(results))
 
 	return results, nil
 }

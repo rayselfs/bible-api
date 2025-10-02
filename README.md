@@ -227,7 +227,27 @@ go fmt ./...
 go vet ./...
 ```
 
-## 📊 Monitoring & Health Checks
+## 📊 Monitoring & Logging
+
+### Structured Logging
+
+The API uses structured JSON logging format for better monitoring and debugging:
+
+```json
+{
+  "timestamp": "2024-01-15 10:30:45",
+  "level": "INFO",
+  "message": "Starting Bible API Service..."
+}
+```
+
+### Log Levels
+- **INFO**: General application flow and successful operations
+- **WARN**: Warning messages for non-critical issues
+- **ERROR**: Error messages for failed operations
+- **DEBUG**: Detailed debugging information (when enabled)
+
+### Health Checks
 
 The API provides health check endpoints for monitoring:
 

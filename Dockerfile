@@ -1,7 +1,5 @@
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS base
 
-RUN apk add --no-cache git
-
 # Set the working directory
 WORKDIR /app
 
@@ -14,8 +12,15 @@ RUN go mod download
 # Build stage
 FROM base AS build
 
+# Swag setting
+RUN apk add --no-cache git
+RUN go install github.com/swaggo/swag/cmd/swag@latest
+RUN export PATH=$(go env GOPATH)/bin:$PATH
+
 # Copy the source code to the working directory
 COPY . .
+
+RUN swag init -g cmd/main.go
 
 # Build the Go application
 ARG TARGETOS TARGETARCH
@@ -30,8 +35,7 @@ WORKDIR /app
 # Copy the binary from the build stage
 COPY --chown=nonroot:nonroot --from=build /app/main /app/main
 
-# Expose the port your application listens on
-EXPOSE 9999
+USER nonroot:nonroot
 
 # Set the entrypoint command for the container
 ENTRYPOINT ["/app/main"]

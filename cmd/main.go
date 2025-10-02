@@ -1,9 +1,8 @@
 package main
 
 import (
-	"log"
-
 	"hhc/bible-api/configs"
+	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
 	"hhc/bible-api/internal/server"
 	"hhc/bible-api/migrations"
@@ -30,10 +29,17 @@ import (
 // @host         localhost:8080
 // @BasePath     /
 func main() {
+	// Initialize structured logger
+	logger.Init()
+	appLogger := logger.GetAppLogger()
+
+	appLogger.Info("Starting Bible API Service...")
+
 	cfg, err := configs.InitConfig()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v\n", err)
+		appLogger.Fatalf("Failed to load config: %v", err)
 	}
+	appLogger.Info("Configuration loaded successfully")
 
 	dsn := cfg.MysqlUser + ":" + cfg.MysqlPass + "@tcp(" + cfg.MysqlHost + ":" + cfg.MysqlPort + ")/" + cfg.MysqlDB + "?charset=utf8mb4&parseTime=True&loc=Local"
 	db, err := gorm.Open(mysql.New(mysql.Config{
@@ -41,25 +47,27 @@ func main() {
 		DefaultStringSize: 256,
 	}), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v\n", err)
+		appLogger.Fatalf("Failed to connect to database: %v", err)
 	}
-	log.Println("Database connection successful.")
+	appLogger.Info("Database connection successful")
 
 	m := gormigrate.New(db, gormigrate.DefaultOptions, []*gormigrate.Migration{
 		migrations.InitialSchema,
 	})
 	if err = m.Migrate(); err != nil {
-		log.Fatalf("Could not migrate: %v", err)
+		appLogger.Fatalf("Database migration failed: %v", err)
 	}
-	log.Println("Migration run successfully")
+	appLogger.Info("Database migration completed successfully")
 
 	store := models.NewStore(db)
 	api := server.NewAPI(store, cfg.AISearchURL)
 	router := api.RegisterRoutes()
 
-	log.Printf("Starting server on :%s", cfg.ServerPort)
-	log.Printf("Swagger UI is available at http://localhost:%s/swagger/index.html", cfg.ServerPort)
+	appLogger.Infof("Starting server on port %s", cfg.ServerPort)
+	appLogger.Infof("Swagger UI available at http://localhost:%s/swagger/index.html", cfg.ServerPort)
+	appLogger.Info("Bible API Service started successfully")
+
 	if err := router.Run(":" + cfg.ServerPort); err != nil {
-		log.Fatalf("Could not start server: %s\n", err)
+		appLogger.Fatalf("Server startup failed: %s", err)
 	}
 }
