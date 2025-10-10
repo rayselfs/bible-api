@@ -10,6 +10,7 @@ import (
 	"github.com/go-gormigrate/gormigrate/v2"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormLogger "gorm.io/gorm/logger"
 
 	_ "hhc/bible-api/docs"
 )
@@ -42,10 +43,16 @@ func main() {
 	appLogger.Info("Configuration loaded successfully")
 
 	dsn := cfg.MysqlUser + ":" + cfg.MysqlPass + "@tcp(" + cfg.MysqlHost + ":" + cfg.MysqlPort + ")/" + cfg.MysqlDB + "?charset=utf8mb4&parseTime=True&loc=Local"
+
+	// Create custom GORM logger with JSON format
+	customGormLogger := logger.NewGormLogger(appLogger, gormLogger.Warn)
+
 	db, err := gorm.Open(mysql.New(mysql.Config{
 		DSN:               dsn,
 		DefaultStringSize: 256,
-	}), &gorm.Config{})
+	}), &gorm.Config{
+		Logger: customGormLogger,
+	})
 	if err != nil {
 		appLogger.Fatalf("Failed to connect to database: %v", err)
 	}
