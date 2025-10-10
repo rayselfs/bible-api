@@ -15,7 +15,6 @@ variables:
   repository: 'alive/bible-api'
   containerAppName: 'bible-api'
   resourceGroup: 'alive'
-  azureSubscription: '3765a72c-2c30-492c-8b88-7a26522903f8'
 
 steps:
   - script: |
@@ -51,11 +50,11 @@ steps:
       containerRegistry: 'alive-acr'
       repository: '$(repository)'
       tags: '$(IMAGE_TAG)'
-  
+
   - task: AzureCLI@2
     displayName: 'Deploy to Azure Container App'
     inputs:
-      azureSubscription: '$(azureSubscription)'
+      azureSubscription: 'HHC-Alive'
       scriptType: 'bash'
       scriptLocation: 'inlineScript'
       inlineScript: |
