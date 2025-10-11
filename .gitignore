@@ -3,3 +3,6 @@
 
 # TLS Certificate (downloaded locally, included in Docker build)
 DigiCertGlobalRootG2.crt.pem
+
+cmd/import
+Import.Dockerfile
