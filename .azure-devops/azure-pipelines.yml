@@ -3,10 +3,6 @@ trigger:
     include:
       - '*'
 
-resources:
-  - repo: self
-    fetchDepth: "0"
-
 pool:
   vmImage: 'ubuntu-latest'
 
@@ -17,6 +13,9 @@ variables:
   resourceGroup: 'alive'
 
 steps:
+  - checkout: self
+    fetchDepth: 0
+
   - script: |
       # Get the latest tag from git repository
       git fetch --tags
