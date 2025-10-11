@@ -18,7 +18,6 @@ steps:
 
   - script: |
       # Get the latest tag from git repository
-      git fetch --tags
       LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
       
       if [ -z "$LATEST_TAG" ]; then

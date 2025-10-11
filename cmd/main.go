@@ -49,11 +49,10 @@ func main() {
 
 	// Check if CA certificate exists and register TLS config for Azure MySQL
 	var tlsParam string
-	certPath := "DigiCertGlobalRootG2.crt.pem"
-	if _, err := os.Stat(certPath); err == nil {
+	if _, err := os.Stat(cfg.MysqlCert); err == nil {
 		// Certificate exists, use TLS
 		rootCertPool := x509.NewCertPool()
-		pem, err := os.ReadFile(certPath)
+		pem, err := os.ReadFile(cfg.MysqlCert)
 		if err != nil {
 			appLogger.Fatalf("Failed to read CA certificate: %v", err)
 		}
@@ -64,11 +63,11 @@ func main() {
 			RootCAs: rootCertPool,
 		})
 		tlsParam = "&tls=azure"
-		appLogger.Info("TLS configuration registered for Azure MySQL")
+		appLogger.Infof("TLS configuration registered for Azure MySQL (cert: %s)", cfg.MysqlCert)
 	} else {
 		// Certificate not found, use plain connection (for local development)
 		tlsParam = ""
-		appLogger.Info("CA certificate not found, using non-TLS connection for local development")
+		appLogger.Infof("CA certificate not found at %s, using non-TLS connection for local development", cfg.MysqlCert)
 	}
 
 	dsn := cfg.MysqlUser + ":" + cfg.MysqlPass + "@tcp(" + cfg.MysqlHost + ":" + cfg.MysqlPort + ")/" + cfg.MysqlDB + "?charset=utf8mb4&parseTime=True&loc=Local" + tlsParam
