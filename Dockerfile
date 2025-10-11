@@ -13,12 +13,15 @@ RUN go mod download
 FROM base AS build
 
 # Swag setting
-RUN apk add --no-cache git
+RUN apk add --no-cache git curl
 RUN go install github.com/swaggo/swag/cmd/swag@latest
 RUN export PATH=$(go env GOPATH)/bin:$PATH
 
 # Copy the source code to the working directory
 COPY . .
+
+# Download Azure MySQL CA certificate
+RUN curl -o DigiCertGlobalRootG2.crt.pem https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem
 
 RUN swag init -g cmd/main.go
 
@@ -34,6 +37,9 @@ WORKDIR /app
 
 # Copy the binary from the build stage
 COPY --chown=nonroot:nonroot --from=build /app/main /app/main
+
+# Copy the TLS certificate for Azure MySQL
+COPY --chown=nonroot:nonroot --from=build /app/DigiCertGlobalRootG2.crt.pem /app/DigiCertGlobalRootG2.crt.pem
 
 USER nonroot:nonroot
 

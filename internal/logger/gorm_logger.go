@@ -126,3 +126,4 @@ func (l *GormLogger) printJSON(entry GormLogEntry) {
 	}
 	l.appLogger.Print(string(jsonData))
 }
+

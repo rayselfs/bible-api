@@ -1,6 +1,10 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"os"
+
 	"hhc/bible-api/configs"
 	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
@@ -8,6 +12,7 @@ import (
 	"hhc/bible-api/migrations"
 
 	"github.com/go-gormigrate/gormigrate/v2"
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
@@ -42,7 +47,31 @@ func main() {
 	}
 	appLogger.Info("Configuration loaded successfully")
 
-	dsn := cfg.MysqlUser + ":" + cfg.MysqlPass + "@tcp(" + cfg.MysqlHost + ":" + cfg.MysqlPort + ")/" + cfg.MysqlDB + "?charset=utf8mb4&parseTime=True&loc=Local"
+	// Check if CA certificate exists and register TLS config for Azure MySQL
+	var tlsParam string
+	certPath := "DigiCertGlobalRootG2.crt.pem"
+	if _, err := os.Stat(certPath); err == nil {
+		// Certificate exists, use TLS
+		rootCertPool := x509.NewCertPool()
+		pem, err := os.ReadFile(certPath)
+		if err != nil {
+			appLogger.Fatalf("Failed to read CA certificate: %v", err)
+		}
+		if ok := rootCertPool.AppendCertsFromPEM(pem); !ok {
+			appLogger.Fatal("Failed to append CA certificate to pool")
+		}
+		mysqlDriver.RegisterTLSConfig("azure", &tls.Config{
+			RootCAs: rootCertPool,
+		})
+		tlsParam = "&tls=azure"
+		appLogger.Info("TLS configuration registered for Azure MySQL")
+	} else {
+		// Certificate not found, use plain connection (for local development)
+		tlsParam = ""
+		appLogger.Info("CA certificate not found, using non-TLS connection for local development")
+	}
+
+	dsn := cfg.MysqlUser + ":" + cfg.MysqlPass + "@tcp(" + cfg.MysqlHost + ":" + cfg.MysqlPort + ")/" + cfg.MysqlDB + "?charset=utf8mb4&parseTime=True&loc=Local" + tlsParam
 
 	// Create custom GORM logger with JSON format
 	customGormLogger := logger.NewGormLogger(appLogger, gormLogger.Warn)
