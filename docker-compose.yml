@@ -12,7 +12,6 @@ services:
       MYSQL_USER: bible
       MYSQL_PASS: bible
       MYSQL_DB: bible
-      AI_SEARCH_URL: http://ai-search-service:9999
       SERVER_PORT: 8080
     depends_on:
       mysql:
