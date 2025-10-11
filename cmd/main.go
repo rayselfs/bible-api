@@ -95,7 +95,7 @@ func main() {
 	appLogger.Info("Database migration completed successfully")
 
 	store := models.NewStore(db)
-	api := server.NewAPI(store, cfg.AISearchURL)
+	api := server.NewAPI(store)
 	router := api.RegisterRoutes()
 
 	appLogger.Infof("Starting server on port %s", cfg.ServerPort)

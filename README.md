@@ -1,11 +1,10 @@
 # Bible API
 
-A modern, RESTful Bible API built with Go, featuring semantic search capabilities powered by AI. This API provides access to Bible content with intelligent search functionality that understands the meaning behind queries.
+A modern, RESTful Bible API built with Go. This API provides access to Bible content across multiple versions with a clean and well-documented interface.
 
 ## 🚀 Features
 
 - **RESTful API**: Clean, well-documented REST endpoints
-- **Semantic Search**: AI-powered search that understands query intent
 - **Multiple Bible Versions**: Support for different Bible translations
 - **Swagger Documentation**: Interactive API documentation
 - **Database Migrations**: Automated database schema management
@@ -22,9 +21,6 @@ A modern, RESTful Bible API built with Go, featuring semantic search capabilitie
 - `GET /api/bible/v1/versions` - Get all available Bible versions
 - `GET /api/bible/v1/version/{version_id}` - Get complete Bible content by version ID
 
-### Semantic Search
-- `POST /api/bible/v1/search` - Search Bible verses using semantic understanding
-
 ### Documentation
 - `GET /swagger/*` - Interactive Swagger documentation
 
@@ -33,7 +29,6 @@ A modern, RESTful Bible API built with Go, featuring semantic search capabilitie
 - **Language**: Go 1.24+
 - **Framework**: Gin (HTTP web framework)
 - **Database**: MySQL with GORM (ORM)
-- **AI Search**: External AI search service integration
 - **Documentation**: Swagger/OpenAPI 3.0
 - **Migration**: Gormigrate
 - **Containerization**: Docker & Docker Compose
@@ -50,8 +45,6 @@ bible-api/
 ├── docs/                    # Swagger documentation
 ├── internal/
 │   ├── models/              # Database models and stores
-│   ├── pkg/
-│   │   └── search/          # Search functionality
 │   └── server/              # HTTP handlers and routes
 ├── migrations/              # Database migrations
 ├── Dockerfile
@@ -97,7 +90,6 @@ bible-api/
    export MYSQL_USER=bible
    export MYSQL_PASS=bible
    export MYSQL_DB=bible
-   export AI_SEARCH_URL=http://localhost:9999
    export SERVER_PORT=8080
    ```
 
@@ -152,7 +144,6 @@ The application uses environment variables for configuration:
 | `MYSQL_USER` | MySQL username | `bible` |
 | `MYSQL_PASS` | MySQL password | `bible` |
 | `MYSQL_DB` | MySQL database name | `bible` |
-| `AI_SEARCH_URL` | AI search service URL | `http://localhost:9999` |
 | `SERVER_PORT` | Server port | `8080` |
 
 ## 📖 API Usage Examples
@@ -165,36 +156,6 @@ curl -X GET "http://localhost:8080/api/bible/v1/versions"
 ### Get Bible Content by Version
 ```bash
 curl -X GET "http://localhost:8080/api/bible/v1/version/1"
-```
-
-### Semantic Search
-```bash
-curl -X POST "http://localhost:8080/api/bible/v1/search" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "love and forgiveness",
-    "top_k": 10
-  }'
-```
-
-### Response Example
-```json
-{
-  "query": "love and forgiveness",
-  "results": [
-    {
-      "rank": 1,
-      "score": 0.95,
-      "book_name": "John",
-      "chapter": 3,
-      "verse": 16,
-      "text": "For God so loved the world...",
-      "version_id": 1,
-      "version_name": "King James Version"
-    }
-  ],
-  "total": 1
-}
 ```
 
 ## 🔄 Database Migrations
@@ -282,11 +243,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
    - Check connection parameters
    - Ensure database exists
 
-2. **AI Search Service Unavailable**
-   - Verify AI_SEARCH_URL is correct
-   - Check if the AI search service is running
-
-3. **Port Already in Use**
+2. **Port Already in Use**
    - Change SERVER_PORT environment variable
    - Kill existing processes on the port
 

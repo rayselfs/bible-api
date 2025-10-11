@@ -74,30 +74,3 @@ type BibleContentVerse struct {
 	Number int    `json:"number"`
 	Text   string `json:"text"`
 }
-
-// SearchRequest search request
-type SearchRequest struct {
-	Query   string `json:"query" binding:"required"`
-	TopK    int    `json:"top_k,omitempty"`
-	Version string `json:"version,omitempty"`
-}
-
-// SearchResult search result
-type SearchResult struct {
-	Rank    int     `json:"rank"`
-	Score   float64 `json:"score"`
-	Text    string  `json:"text"`
-	Version string  `json:"version"`
-	Book    int     `json:"book"`
-	Chapter int     `json:"chapter"`
-	Verse   int     `json:"verse"`
-}
-
-// SearchResponse search response
-type SearchResponse struct {
-	Query    string         `json:"query"`
-	Results  []SearchResult `json:"results"`
-	Total    int            `json:"total"`
-	Duration string         `json:"duration,omitempty"`
-	Error    string         `json:"error,omitempty"`
-}

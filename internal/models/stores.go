@@ -1,8 +1,6 @@
 package models
 
 import (
-	"fmt"
-
 	"gorm.io/gorm"
 )
 
@@ -88,53 +86,4 @@ func (s *Store) GetBibleContent(versionID uint) (*BibleContentAPI, error) {
 		VersionName: version.Name,
 		Books:       bibleBooks,
 	}, nil
-}
-
-// SearchDatabase Search for exact matches in database
-func (s *Store) SearchDatabase(query string, versionFilter string) ([]SearchResult, error) {
-	// Use LIKE query for substring matching
-	var verses []Verses
-	var err error
-
-	if versionFilter != "" {
-		// If version filter is specified, first find version ID
-		var version Versions
-		if err := s.DB.Where("code = ?", versionFilter).First(&version).Error; err != nil {
-			return nil, fmt.Errorf("version not found: %s", versionFilter)
-		}
-
-		// Search in specified version
-		err = s.DB.Joins("JOIN chapters ON verses.chapter_id = chapters.id").
-			Joins("JOIN books ON chapters.book_id = books.id").
-			Joins("JOIN versions ON books.version_id = versions.id").
-			Where("verses.text LIKE ? AND versions.id = ?", "%"+query+"%", version.ID).
-			Preload("Chapter.Book.Version").
-			Find(&verses).Error
-	} else {
-		// Search in all versions
-		err = s.DB.Joins("JOIN chapters ON verses.chapter_id = chapters.id").
-			Joins("JOIN books ON chapters.book_id = books.id").
-			Joins("JOIN versions ON books.version_id = versions.id").
-			Where("verses.text LIKE ?", "%"+query+"%").
-			Preload("Chapter.Book.Version").
-			Find(&verses).Error
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert to SearchResult format
-	var results []SearchResult
-	for _, verse := range verses {
-		results = append(results, SearchResult{
-			Text:    verse.Text,
-			Version: verse.Chapter.Book.Version.Code,
-			Book:    int(verse.Chapter.Book.Number),
-			Chapter: int(verse.Chapter.Number),
-			Verse:   int(verse.Number),
-		})
-	}
-
-	return results, nil
 }
