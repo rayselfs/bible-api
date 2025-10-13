@@ -77,8 +77,6 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
-	c.Header("Access-Control-Allow-Origin", "*")
-	c.Header("Access-Control-Allow-Headers", "Cache-Control")
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
