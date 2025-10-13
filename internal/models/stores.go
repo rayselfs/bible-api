@@ -1,6 +1,10 @@
 package models
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+
 	"gorm.io/gorm"
 )
 
@@ -34,56 +38,91 @@ func (s *Store) GetAllVersions() ([]VersionListItem, error) {
 	return versionList, nil
 }
 
-// GetBibleContent Get complete Bible content by version ID
-func (s *Store) GetBibleContent(versionID uint) (*BibleContentAPI, error) {
-	var version Versions
-	var books []Books
+// StreamBibleContent streams Bible content by version ID using channels
+// This method returns a channel that yields Bible books one by one for streaming
+func (s *Store) StreamBibleContent(ctx context.Context, versionID uint) (<-chan []byte, <-chan error) {
+	contentChan := make(chan []byte, 10) // Buffer for better performance
+	errorChan := make(chan error, 1)
 
-	// First get version information
-	if err := s.DB.Where(&Versions{ID: versionID}).First(&version).Error; err != nil {
-		return nil, err
-	}
+	go func() {
+		defer close(contentChan)
+		defer close(errorChan)
 
-	// Get all books, chapters and verses for this version
-	err := s.DB.Preload("Chapters.Verses").Where(&Books{VersionID: version.ID}).Order("number ASC").Find(&books).Error
-	if err != nil {
-		return nil, err
-	}
+		// Get version information first
+		var version Versions
+		if err := s.DB.WithContext(ctx).Where(&Versions{ID: versionID}).First(&version).Error; err != nil {
+			errorChan <- err
+			return
+		}
 
-	// Convert to API response format
-	bibleBooks := make([]BibleContentBook, len(books))
-	for i, book := range books {
-		chapters := make([]BibleContentChapter, len(book.Chapters))
-		for j, chapter := range book.Chapters {
-			verses := make([]BibleContentVerse, len(chapter.Verses))
-			for k, verse := range chapter.Verses {
-				verses[k] = BibleContentVerse{
-					ID:     verse.ID,
-					Number: verse.Number,
-					Text:   verse.Text,
+		// Send version header
+		versionHeader := map[string]interface{}{
+			"version_id":   version.ID,
+			"version_code": version.Code,
+			"version_name": version.Name,
+			"books":        []interface{}{},
+		}
+
+		headerBytes, err := json.Marshal(versionHeader)
+		if err != nil {
+			errorChan <- fmt.Errorf("failed to marshal version header: %w", err)
+			return
+		}
+		contentChan <- headerBytes
+
+		// Get books one by one and stream them
+		var books []Books
+		if err := s.DB.WithContext(ctx).Preload("Chapters.Verses").
+			Where(&Books{VersionID: version.ID}).
+			Order("number ASC").Find(&books).Error; err != nil {
+			errorChan <- err
+			return
+		}
+
+		for _, book := range books {
+			select {
+			case <-ctx.Done():
+				errorChan <- ctx.Err()
+				return
+			default:
+			}
+
+			// Convert book to API format
+			chapters := make([]BibleContentChapter, len(book.Chapters))
+			for j, chapter := range book.Chapters {
+				verses := make([]BibleContentVerse, len(chapter.Verses))
+				for k, verse := range chapter.Verses {
+					verses[k] = BibleContentVerse{
+						ID:     verse.ID,
+						Number: verse.Number,
+						Text:   verse.Text,
+					}
+				}
+
+				chapters[j] = BibleContentChapter{
+					ID:     chapter.ID,
+					Number: chapter.Number,
+					Verses: verses,
 				}
 			}
 
-			chapters[j] = BibleContentChapter{
-				ID:     chapter.ID,
-				Number: chapter.Number,
-				Verses: verses,
+			bookData := BibleContentBook{
+				ID:           book.ID,
+				Number:       book.Number,
+				Name:         book.Name,
+				Abbreviation: book.Abbreviation,
+				Chapters:     chapters,
 			}
-		}
 
-		bibleBooks[i] = BibleContentBook{
-			ID:           book.ID,
-			Number:       book.Number,
-			Name:         book.Name,
-			Abbreviation: book.Abbreviation,
-			Chapters:     chapters,
-		}
-	}
+			bookBytes, err := json.Marshal(bookData)
+			if err != nil {
+				errorChan <- fmt.Errorf("failed to marshal book %d: %w", book.ID, err)
+				return
+			}
 
-	return &BibleContentAPI{
-		VersionID:   version.ID,
-		VersionCode: version.Code,
-		VersionName: version.Name,
-		Books:       bibleBooks,
-	}, nil
+			contentChan <- bookBytes
+		}
+	}()
+
+	return contentChan, errorChan
 }
