@@ -14,8 +14,10 @@ type Env struct {
 	ServerPort string `env:"SERVER_PORT" envDefault:"8080"`
 
 	// Azure AI Search configuration
-	AzureAISearchEndpoint string `env:"AZURE_AI_SEARCH_ENDPOINT"`
-	AzureAISearchQueryKey string `env:"AZURE_AI_SEARCH_QUERY_KEY"`
+	AzureAISearchBaseURL    string `env:"AZURE_AI_SEARCH_BASE_URL"`
+	AzureAISearchQueryKey   string `env:"AZURE_AI_SEARCH_QUERY_KEY"`
+	AzureAISearchIndexName  string `env:"AZURE_AI_SEARCH_INDEX_NAME"`
+	AzureAISearchAPIVersion string `env:"AZURE_AI_SEARCH_API_VERSION" envDefault:"2023-11-01"`
 
 	// Azure OpenAI configuration for search query embedding
 	AzureOpenAIBaseURL   string `env:"AZURE_OPENAI_BASE_URL"`

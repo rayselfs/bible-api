@@ -13,16 +13,20 @@ import (
 // Service 處理 Azure AI Search 相關的業務邏輯
 type Service struct {
 	httpClient       *http.Client
-	aiSearchEndpoint string
+	aiSearchBaseURL  string
 	aiSearchQueryKey string
+	indexName        string
+	apiVersion       string
 }
 
 // NewService 創建新的 AI Search 服務
-func NewService(httpClient *http.Client, aiSearchEndpoint, aiSearchQueryKey string) *Service {
+func NewService(httpClient *http.Client, aiSearchBaseURL, aiSearchQueryKey, indexName, apiVersion string) *Service {
 	return &Service{
 		httpClient:       httpClient,
-		aiSearchEndpoint: aiSearchEndpoint,
+		aiSearchBaseURL:  aiSearchBaseURL,
 		aiSearchQueryKey: aiSearchQueryKey,
+		indexName:        indexName,
+		apiVersion:       apiVersion,
 	}
 }
 
@@ -33,7 +37,11 @@ func (s *Service) Search(ctx context.Context, req models.AISearchRequest) (*mode
 		return nil, fmt.Errorf("failed to marshal search request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", s.aiSearchEndpoint, bytes.NewBuffer(reqBody))
+	// 構建正確的搜尋端點 URL
+	searchURL := fmt.Sprintf("%s/indexes/%s/docs/search?api-version=%s",
+		s.aiSearchBaseURL, s.indexName, s.apiVersion)
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", searchURL, bytes.NewBuffer(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create search request: %w", err)
 	}
@@ -70,6 +78,7 @@ func (s *Service) BuildSearchRequest(queryText string, queryVector []float64, ve
 				Vector: queryVector,
 				Fields: "text_vector", // 要搜尋的向量欄位
 				K:      topK,          // K-NN 搜尋
+				Kind:   "vector",      // 向量查詢類型
 			},
 		},
 		Top:    topK,                                                                      // 最終返回的結果數量

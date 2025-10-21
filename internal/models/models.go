@@ -91,6 +91,7 @@ type VectorQuery struct {
 	Vector []float64 `json:"vector"`
 	Fields string    `json:"fields"`
 	K      int       `json:"k"`
+	Kind   string    `json:"kind"` // 向量查詢類型，通常為 "vector"
 }
 
 // AISearchResponse 是 AI Search 傳回的回應

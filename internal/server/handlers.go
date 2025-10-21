@@ -23,9 +23,9 @@ type API struct {
 	openAIService   *aisearch.OpenAIService
 }
 
-func NewAPI(store *models.Store, oaiClient *openai.Client, httpClient *http.Client, aiSearchEndpoint, aiSearchQueryKey, openAIModelName string) *API {
+func NewAPI(store *models.Store, oaiClient *openai.Client, httpClient *http.Client, aiSearchBaseURL, aiSearchQueryKey, aiSearchIndexName, aiSearchAPIVersion, openAIModelName string) *API {
 	// 初始化 AI 服務
-	aiSearchService := aisearch.NewService(httpClient, aiSearchEndpoint, aiSearchQueryKey)
+	aiSearchService := aisearch.NewService(httpClient, aiSearchBaseURL, aiSearchQueryKey, aiSearchIndexName, aiSearchAPIVersion)
 	openAIService := aisearch.NewOpenAIService(oaiClient, openAIModelName)
 
 	return &API{
