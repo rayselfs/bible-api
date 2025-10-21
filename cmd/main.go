@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"net/http"
 	"os"
+	"time"
 
 	"hhc/bible-api/configs"
 	"hhc/bible-api/internal/logger"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/go-gormigrate/gormigrate/v2"
 	mysqlDriver "github.com/go-sql-driver/mysql"
+	"github.com/openai/openai-go/v2"
+	"github.com/openai/openai-go/v2/option"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
@@ -96,7 +100,15 @@ func main() {
 	appLogger.Info("Database migration completed successfully")
 
 	store := models.NewStore(db)
-	api := server.NewAPI(store)
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	oaiClient := openai.NewClient(
+		option.WithBaseURL(cfg.AzureOpenAIBaseURL),
+		option.WithAPIKey(cfg.AzureOpenAIKey),
+	)
+
+	api := server.NewAPI(store, &oaiClient, httpClient, cfg.AzureAISearchEndpoint, cfg.AzureAISearchQueryKey, cfg.AzureOpenAIModelName)
 	router := api.RegisterRoutes()
 
 	appLogger.Infof("Starting server on port %s", cfg.ServerPort)

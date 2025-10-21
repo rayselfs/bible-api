@@ -6,6 +6,8 @@ A modern, RESTful Bible API built with Go. This API provides access to Bible con
 
 - **RESTful API**: Clean, well-documented REST endpoints
 - **Multiple Bible Versions**: Support for different Bible translations
+- **AI-Powered Search**: Semantic search using Azure AI Search and OpenAI embeddings
+- **Hybrid Search**: Combines keyword and vector search for better results
 - **Swagger Documentation**: Interactive API documentation
 - **Database Migrations**: Automated database schema management
 - **Docker Support**: Containerized deployment
@@ -21,6 +23,9 @@ A modern, RESTful Bible API built with Go. This API provides access to Bible con
 - `GET /api/bible/v1/versions` - Get all available Bible versions
 - `GET /api/bible/v1/version/{version_id}` - Get complete Bible content by version ID
 
+### Bible Search
+- `GET /api/bible/v1/search` - Search Bible verses using semantic similarity
+
 ### Documentation
 - `GET /swagger/*` - Interactive Swagger documentation
 
@@ -29,6 +34,8 @@ A modern, RESTful Bible API built with Go. This API provides access to Bible con
 - **Language**: Go 1.24+
 - **Framework**: Gin (HTTP web framework)
 - **Database**: MySQL with GORM (ORM)
+- **AI Search**: Azure AI Search for semantic search
+- **AI Embeddings**: Azure OpenAI text-embedding-3-small
 - **Documentation**: Swagger/OpenAPI 3.0
 - **Migration**: Gormigrate
 - **Containerization**: Docker & Docker Compose
@@ -45,6 +52,10 @@ bible-api/
 ├── docs/                    # Swagger documentation
 ├── internal/
 │   ├── models/              # Database models and stores
+│   ├── pkg/
+│   │   └── ai-search/       # AI Search services
+│   │       ├── service.go   # Azure AI Search service
+│   │       └── openai.go    # OpenAI embedding service
 │   └── server/              # HTTP handlers and routes
 ├── migrations/              # Database migrations
 ├── Dockerfile
@@ -84,13 +95,20 @@ bible-api/
 
 4. **Configure environment variables**
    ```bash
-   # Copy and modify environment variables
+   # Database configuration
    export MYSQL_HOST=localhost
    export MYSQL_PORT=3306
    export MYSQL_USER=bible
    export MYSQL_PASS=bible
    export MYSQL_DB=bible
    export SERVER_PORT=8080
+   
+   # AI Search configuration (required for search functionality)
+   export AZURE_AI_SEARCH_ENDPOINT="https://your-search-service.search.windows.net/indexes/bible-verses/docs"
+   export AZURE_AI_SEARCH_QUERY_KEY="your-admin-key"
+   export AZURE_OPENAI_BASE_URL="https://your-service.openai.azure.com/openai/v1/"
+   export AZURE_OPENAI_KEY="your-api-key"
+   export AZURE_OPENAI_MODEL_NAME="text-embedding-3-small"
    ```
 
 5. **Run the application**
@@ -145,6 +163,11 @@ The application uses environment variables for configuration:
 | `MYSQL_PASS` | MySQL password | `bible` |
 | `MYSQL_DB` | MySQL database name | `bible` |
 | `SERVER_PORT` | Server port | `8080` |
+| `AZURE_AI_SEARCH_ENDPOINT` | Azure AI Search endpoint | Required for search |
+| `AZURE_AI_SEARCH_QUERY_KEY` | Azure AI Search query key | Required for search |
+| `AZURE_OPENAI_BASE_URL` | Azure OpenAI base URL | Required for embedding |
+| `AZURE_OPENAI_KEY` | Azure OpenAI API key | Required for embedding |
+| `AZURE_OPENAI_MODEL_NAME` | Azure OpenAI model name | Required for embedding |
 
 ## 📖 API Usage Examples
 
@@ -157,6 +180,83 @@ curl -X GET "http://localhost:8080/api/bible/v1/versions"
 ```bash
 curl -X GET "http://localhost:8080/api/bible/v1/version/1"
 ```
+
+### Search Bible Verses
+```bash
+curl -X GET "http://localhost:8080/api/bible/v1/search?q=愛&version=CUV&top=10"
+```
+
+#### Search API Request Format
+```
+GET /api/bible/v1/search?q=搜尋關鍵字&version=版本代碼&top=結果數量
+```
+
+**參數說明：**
+- `q` (required): 搜尋查詢字串
+- `version` (required): 聖經版本代碼 (如: CUV, ESV, NIV)
+- `top` (optional): 回傳結果數量限制，預設為 10
+
+#### Search API Response Format
+```json
+{
+  "query": "愛",
+  "results": [
+    {
+      "verse_id": "123",
+      "version_code": "CUV",
+      "book_number": 1,
+      "chapter_number": 1,
+      "verse_number": 1,
+      "text": "起初，神創造天地。",
+      "score": 0.95
+    }
+  ],
+  "total": 1
+}
+```
+
+#### Search Parameters
+- `q` (required): Search query string
+- `version` (required): Bible version code (e.g., CUV, ESV, NIV)
+- `top` (optional): Maximum number of results (default: 10)
+
+## 🔍 AI Search Integration
+
+The search API integrates with Azure AI Search for semantic search capabilities:
+
+### Features
+- **Text Search**: Full-text search using Azure AI Search
+- **Vector Search**: Semantic similarity search (requires embedding implementation)
+- **Version Filtering**: Filter results by Bible version
+- **Relevance Scoring**: Results include similarity scores
+
+### Setup
+1. Configure Azure AI Search environment variables
+2. Ensure the search index contains Bible verse data
+3. See [AI_SEARCH_SETUP.md](AI_SEARCH_SETUP.md) for detailed setup instructions
+
+### Current Implementation
+- ✅ Hybrid search (text + vector) using Azure AI Search
+- ✅ OpenAI embedding integration for semantic search
+- ✅ Version filtering (required parameter)
+- ✅ Result scoring and ranking
+- ✅ RESTful GET API with query parameters
+
+## 💰 Cost Estimation
+
+### Search API Costs
+- **OpenAI text-embedding-3-small**: $0.00002 per 1,000 tokens
+- **Azure AI Search Basic**: $73/month (fixed cost)
+- **Estimated cost per search**: ~$0.0073 (based on 10,000 searches/month)
+
+### Cost Breakdown
+| Usage Level | Monthly Searches | OpenAI Cost | Azure AI Search | Total/Month |
+|-------------|------------------|-------------|-----------------|-------------|
+| Light | 1,000 | $0.00004 | $73 | $73.00 |
+| Medium | 10,000 | $0.0004 | $73 | $73.00 |
+| Heavy | 100,000 | $0.004 | $73 | $73.00 |
+
+*Note: OpenAI costs are negligible compared to Azure AI Search fixed monthly fee*
 
 ## 🔄 Database Migrations
 
@@ -180,6 +280,26 @@ swag init --dir cmd
 ### Running Tests
 ```bash
 go test ./...
+```
+
+### Testing the Search API
+```bash
+# Test basic search
+curl -X GET "http://localhost:8080/api/bible/v1/search?q=愛&version=CUV&top=5"
+
+# Test with different version
+curl -X GET "http://localhost:8080/api/bible/v1/search?q=love&version=ESV&top=3"
+
+# Test error cases
+curl -X GET "http://localhost:8080/api/bible/v1/search?q=愛"  # Missing version
+curl -X GET "http://localhost:8080/api/bible/v1/search?version=CUV"  # Missing query
+```
+
+### Automated Testing
+```bash
+# Run the test script
+chmod +x test_hybrid_search.sh
+./test_hybrid_search.sh
 ```
 
 ### Code Formatting
@@ -262,11 +382,13 @@ go run cmd/main.go
 
 - [ ] Authentication & Authorization
 - [ ] Rate Limiting
-- [ ] Caching Layer (Redis)
+- [ ] Caching Layer (Redis) for search results
 - [ ] Metrics & Monitoring (Prometheus)
 - [ ] Load Balancing
 - [ ] API Versioning Strategy
-- [ ] Comprehensive Test Suite
+- [ ] Search result ranking improvements
+- [ ] Multi-language search support
+- [ ] Search analytics and insights
 - [ ] Performance Optimization
 
 ## 📞 Support

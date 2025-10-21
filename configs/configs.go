@@ -12,6 +12,15 @@ type Env struct {
 	MysqlDB    string `env:"MYSQL_DB" envDefault:"bible"`
 	MysqlCert  string `env:"MYSQL_CERT" envDefault:"/app/DigiCertGlobalRootG2.crt.pem"`
 	ServerPort string `env:"SERVER_PORT" envDefault:"8080"`
+
+	// Azure AI Search configuration
+	AzureAISearchEndpoint string `env:"AZURE_AI_SEARCH_ENDPOINT"`
+	AzureAISearchQueryKey string `env:"AZURE_AI_SEARCH_QUERY_KEY"`
+
+	// Azure OpenAI configuration for search query embedding
+	AzureOpenAIBaseURL   string `env:"AZURE_OPENAI_BASE_URL"`
+	AzureOpenAIKey       string `env:"AZURE_OPENAI_KEY"`
+	AzureOpenAIModelName string `env:"AZURE_OPENAI_MODEL_NAME"`
 }
 
 func InitConfig() (*Env, error) {

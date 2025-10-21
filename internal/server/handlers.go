@@ -9,17 +9,29 @@ import (
 
 	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
+	aisearch "hhc/bible-api/internal/pkg/ai-search"
 
 	"github.com/gin-gonic/gin"
+	"github.com/openai/openai-go/v2"
 )
 
 type API struct {
 	store *models.Store
+
+	// AI 服務
+	aiSearchService *aisearch.Service
+	openAIService   *aisearch.OpenAIService
 }
 
-func NewAPI(store *models.Store) *API {
+func NewAPI(store *models.Store, oaiClient *openai.Client, httpClient *http.Client, aiSearchEndpoint, aiSearchQueryKey, openAIModelName string) *API {
+	// 初始化 AI 服務
+	aiSearchService := aisearch.NewService(httpClient, aiSearchEndpoint, aiSearchQueryKey)
+	openAIService := aisearch.NewOpenAIService(oaiClient, openAIModelName)
+
 	return &API{
-		store: store,
+		store:           store,
+		aiSearchService: aiSearchService,
+		openAIService:   openAIService,
 	}
 }
 
@@ -134,4 +146,57 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 			return
 		}
 	}
+}
+
+// HandleSearch 執行混合搜尋
+// @Summary      Search Bible verses
+// @Description  Perform hybrid (keyword + semantic) search for Bible verses
+// @Tags         Bible
+// @Produce      json
+// @Param        q          query     string  true  "Search query"
+// @Param        version    query     string  true  "Version code to filter (e.g., CUV)"
+// @Param        top        query     int     false "Number of results to return (default: 10)"
+// @Success      200        {array}   models.AISearchResult "Successfully retrieved search results"
+// @Failure      400        {object}  ErrorResponse  "Invalid input parameters"
+// @Failure      500        {object}  ErrorResponse  "Internal server error"
+// @Router       /api/bible/v1/search [get]
+func (a *API) HandleSearch(c *gin.Context) {
+	queryText := c.Query("q")
+	if queryText == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "query (q) is required"})
+		return
+	}
+	versionFilter := c.Query("version")
+	if versionFilter == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "version is required"})
+		return
+	}
+	topK, _ := strconv.Atoi(c.DefaultQuery("top", "10"))
+	if topK <= 0 {
+		topK = 10
+	}
+
+	ctx := c.Request.Context()
+
+	// 1. (T) 轉換：取得查詢的向量
+	queryVector, err := a.openAIService.GetEmbedding(ctx, queryText)
+	if err != nil {
+		logger.GetAppLogger().Errorf("Failed to get query embedding: %v", err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to process search query"})
+		return
+	}
+
+	// 2. (L) 載入：建構 AI Search 的混合搜尋請求
+	aiSearchReq := a.aiSearchService.BuildSearchRequest(queryText, queryVector, versionFilter, topK)
+
+	// 3. 執行搜尋
+	searchResp, err := a.aiSearchService.Search(ctx, aiSearchReq)
+	if err != nil {
+		logger.GetAppLogger().Errorf("Failed to execute AI Search query: %v", err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to retrieve search results"})
+		return
+	}
+
+	// 4. 回傳結果
+	c.JSON(http.StatusOK, searchResp.Value)
 }

@@ -74,3 +74,63 @@ type BibleContentVerse struct {
 	Number int    `json:"number"`
 	Text   string `json:"text"`
 }
+
+// --- 新增：Azure AI Search 相關模型 ---
+
+// AISearchRequest 是傳送給 AI Search 的混合搜尋請求
+type AISearchRequest struct {
+	Search        string        `json:"search,omitempty"` // 關鍵字
+	VectorQueries []VectorQuery `json:"vectorQueries"`    // 向量
+	Filter        string        `json:"filter,omitempty"`
+	Top           int           `json:"top"`
+	Select        string        `json:"select"`
+}
+
+// VectorQuery 是向量搜尋的具體內容
+type VectorQuery struct {
+	Vector []float64 `json:"vector"`
+	Fields string    `json:"fields"`
+	K      int       `json:"k"`
+}
+
+// AISearchResponse 是 AI Search 傳回的回應
+type AISearchResponse struct {
+	Value []AISearchResult `json:"value"`
+}
+
+// AISearchResult 是 AI Search 傳回的單筆文件
+// (欄位名稱必須匹配您在 index 中定義的)
+type AISearchResult struct {
+	Score         float64 `json:"@search.score"` // AI Search 產生的相關性分數
+	VerseID       string  `json:"verse_id"`
+	VersionCode   string  `json:"version_code"`
+	BookNumber    int     `json:"book_number"`
+	ChapterNumber int     `json:"chapter_number"`
+	VerseNumber   int     `json:"verse_number"`
+	Text          string  `json:"text"`
+}
+
+// SearchRequest represents the search request payload
+type SearchRequest struct {
+	Query     string `json:"query" binding:"required" example:"愛"`
+	VersionID *uint  `json:"version_id,omitempty" example:"1"`
+	Limit     *int   `json:"limit,omitempty" example:"10"`
+}
+
+// SearchResult represents a single search result
+type SearchResult struct {
+	VerseID       string  `json:"verse_id"`
+	VersionCode   string  `json:"version_code"`
+	BookNumber    uint    `json:"book_number"`
+	ChapterNumber uint    `json:"chapter_number"`
+	VerseNumber   uint    `json:"verse_number"`
+	Text          string  `json:"text"`
+	Score         float64 `json:"score"`
+}
+
+// SearchResponse represents the search response
+type SearchResponse struct {
+	Query   string         `json:"query"`
+	Results []SearchResult `json:"results"`
+	Total   int            `json:"total"`
+}
