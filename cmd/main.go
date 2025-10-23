@@ -108,7 +108,7 @@ func main() {
 		option.WithAPIKey(cfg.AzureOpenAIKey),
 	)
 
-	api := server.NewAPI(store, &oaiClient, httpClient, cfg.AzureAISearchEndpoint, cfg.AzureAISearchQueryKey, cfg.AzureAISearchIndexName, cfg.AzureAISearchAPIVersion, cfg.AzureOpenAIModelName)
+	api := server.NewAPI(store, &oaiClient, httpClient, cfg.AzureAISearchBaseURL, cfg.AzureAISearchQueryKey, cfg.AzureAISearchIndexName, cfg.AzureAISearchAPIVersion, cfg.AzureOpenAIModelName)
 	router := api.RegisterRoutes()
 
 	appLogger.Infof("Starting server on port %s", cfg.ServerPort)
