@@ -120,18 +120,11 @@ type SearchRequest struct {
 
 // SearchResult represents a single search result
 type SearchResult struct {
+	Score         float64 `json:"score"`
 	VerseID       string  `json:"verse_id"`
 	VersionCode   string  `json:"version_code"`
 	BookNumber    uint    `json:"book_number"`
 	ChapterNumber uint    `json:"chapter_number"`
 	VerseNumber   uint    `json:"verse_number"`
 	Text          string  `json:"text"`
-	Score         float64 `json:"score"`
-}
-
-// SearchResponse represents the search response
-type SearchResponse struct {
-	Query   string         `json:"query"`
-	Results []SearchResult `json:"results"`
-	Total   int            `json:"total"`
 }

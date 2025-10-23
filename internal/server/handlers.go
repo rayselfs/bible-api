@@ -156,7 +156,7 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 // @Param        q          query     string  true  "Search query"
 // @Param        version    query     string  true  "Version code to filter (e.g., CUV)"
 // @Param        top        query     int     false "Number of results to return (default: 10)"
-// @Success      200        {array}   models.AISearchResult "Successfully retrieved search results"
+// @Success      200        {array}   models.SearchResult "Successfully retrieved search results"
 // @Failure      400        {object}  ErrorResponse  "Invalid input parameters"
 // @Failure      500        {object}  ErrorResponse  "Internal server error"
 // @Router       /api/bible/v1/search [get]
@@ -197,6 +197,20 @@ func (a *API) HandleSearch(c *gin.Context) {
 		return
 	}
 
-	// 4. 回傳結果
-	c.JSON(http.StatusOK, searchResp.Value)
+	// 4. 轉換結果，將 @search.score 重命名為 score
+	results := make([]models.SearchResult, len(searchResp.Value))
+	for i, aiResult := range searchResp.Value {
+		results[i] = models.SearchResult{
+			VerseID:       aiResult.VerseID,
+			VersionCode:   aiResult.VersionCode,
+			BookNumber:    uint(aiResult.BookNumber),
+			ChapterNumber: uint(aiResult.ChapterNumber),
+			VerseNumber:   uint(aiResult.VerseNumber),
+			Text:          aiResult.Text,
+			Score:         aiResult.Score,
+		}
+	}
+
+	// 5. 回傳結果
+	c.JSON(http.StatusOK, results)
 }
