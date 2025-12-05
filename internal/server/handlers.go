@@ -9,29 +9,23 @@ import (
 
 	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
-	aisearch "hhc/bible-api/internal/pkg/ai-search"
+	"hhc/bible-api/internal/pkg/openai"
 
 	"github.com/gin-gonic/gin"
-	"github.com/openai/openai-go/v2"
+	oai "github.com/openai/openai-go/v2"
 )
 
 type API struct {
-	store *models.Store
-
-	// AI 服務
-	aiSearchService *aisearch.Service
-	openAIService   *aisearch.OpenAIService
+	store         *models.Store
+	openAIService *openai.OpenAIService
 }
 
-func NewAPI(store *models.Store, oaiClient *openai.Client, httpClient *http.Client, aiSearchBaseURL, aiSearchQueryKey, aiSearchIndexName, aiSearchAPIVersion, openAIModelName string) *API {
-	// 初始化 AI 服務
-	aiSearchService := aisearch.NewService(httpClient, aiSearchBaseURL, aiSearchQueryKey, aiSearchIndexName, aiSearchAPIVersion)
-	openAIService := aisearch.NewOpenAIService(oaiClient, openAIModelName)
+func NewAPI(store *models.Store, oaiClient *oai.Client, httpClient *http.Client, openAIModelName string) *API {
+	openAIService := openai.NewOpenAIService(oaiClient, openAIModelName)
 
 	return &API{
-		store:           store,
-		aiSearchService: aiSearchService,
-		openAIService:   openAIService,
+		store:         store,
+		openAIService: openAIService,
 	}
 }
 
@@ -177,40 +171,24 @@ func (a *API) HandleSearch(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-
-	// 1. (T) 轉換：取得查詢的向量
-	queryVector, err := a.openAIService.GetEmbedding(ctx, queryText)
+	queryVector64, err := a.openAIService.GetEmbedding(ctx, queryText)
 	if err != nil {
 		logger.GetAppLogger().Errorf("Failed to get query embedding: %v", err)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to process search query"})
 		return
 	}
 
-	// 2. (L) 載入：建構 AI Search 的混合搜尋請求
-	aiSearchReq := a.aiSearchService.BuildSearchRequest(queryText, queryVector, versionFilter, topK)
+	queryVector := make([]float32, len(queryVector64))
+	for i, v := range queryVector64 {
+		queryVector[i] = float32(v)
+	}
 
-	// 3. 執行搜尋
-	searchResp, err := a.aiSearchService.Search(ctx, aiSearchReq)
+	results, err := a.store.SearchVerses(ctx, queryText, queryVector, versionFilter, topK)
 	if err != nil {
-		logger.GetAppLogger().Errorf("Failed to execute AI Search query: %v", err)
+		logger.GetAppLogger().Errorf("Failed to execute Hybrid Search: %v", err)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to retrieve search results"})
 		return
 	}
 
-	// 4. 轉換結果，將 @search.score 重命名為 score
-	results := make([]models.SearchResult, len(searchResp.Value))
-	for i, aiResult := range searchResp.Value {
-		results[i] = models.SearchResult{
-			VerseID:       aiResult.VerseID,
-			VersionCode:   aiResult.VersionCode,
-			BookNumber:    uint(aiResult.BookNumber),
-			ChapterNumber: uint(aiResult.ChapterNumber),
-			VerseNumber:   uint(aiResult.VerseNumber),
-			Text:          aiResult.Text,
-			Score:         aiResult.Score,
-		}
-	}
-
-	// 5. 回傳結果
 	c.JSON(http.StatusOK, results)
 }

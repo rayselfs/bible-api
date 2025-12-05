@@ -20,9 +20,6 @@ RUN export PATH=$(go env GOPATH)/bin:$PATH
 # Copy the source code to the working directory
 COPY . .
 
-# Download Azure MySQL CA certificate
-RUN curl -o DigiCertGlobalRootG2.crt.pem https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem
-
 RUN swag init -g cmd/main.go
 
 # Build the Go application
@@ -30,16 +27,13 @@ ARG TARGETOS TARGETARCH
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /app/main cmd/main.go
 
 # STAGE 2: build the container to run
-FROM gcr.io/distroless/static-debian12:latest AS final
+FROM gcr.io/distroless/static-debian12 AS final
 
 # Set the working directory
 WORKDIR /app
 
 # Copy the binary from the build stage
 COPY --chown=nonroot:nonroot --from=build /app/main /app/main
-
-# Copy the TLS certificate for Azure MySQL
-COPY --chown=nonroot:nonroot --from=build /app/DigiCertGlobalRootG2.crt.pem /app/DigiCertGlobalRootG2.crt.pem
 
 USER nonroot:nonroot
 

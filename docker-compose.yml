@@ -1,46 +1,17 @@
 services:
-  server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: bible-api
-    ports:
-      - "8080:8080"
+  postgres:
+    image: pgvector/pgvector:pg17
     environment:
-      GIN_MODE: release
-      MYSQL_HOST: mysql
-      MYSQL_USER: bible
-      MYSQL_PASS: bible
-      MYSQL_DB: bible
-      SERVER_PORT: 8080
-    depends_on:
-      mysql:
-        condition: service_healthy
-    networks:
-      - hhc
-
-  mysql:
-    image: mysql:8.0
-    container_name: mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: bible
-      MYSQL_USER: bible
-      MYSQL_PASSWORD: bible
+      POSTGRES_USER: bible
+      POSTGRES_PASSWORD: bible
+      POSTGRES_DB: bible
     ports:
-      - "3306:3306"
+      - "5432:5432"
     volumes:
-      - ./.data:/var/lib/mysql
+      - ./.data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "pg_isready -U bible"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-    networks:
-      - hhc
-
-networks:
-  hhc:
-    name: hhc
-    external: true

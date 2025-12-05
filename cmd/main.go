@@ -1,23 +1,24 @@
 package main
 
 import (
-	"crypto/tls"
-	"crypto/x509"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
 
 	"hhc/bible-api/configs"
+	importer "hhc/bible-api/internal/import"
 	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
+	oaiOpenAI "hhc/bible-api/internal/pkg/openai"
 	"hhc/bible-api/internal/server"
 	"hhc/bible-api/migrations"
 
 	"github.com/go-gormigrate/gormigrate/v2"
-	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/openai/openai-go/v2"
 	"github.com/openai/openai-go/v2/option"
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
 
@@ -40,7 +41,66 @@ import (
 // @schemes      https
 // @BasePath     /
 func main() {
-	// Initialize structured logger
+	if len(os.Args) > 1 && os.Args[1] == "import" {
+		if len(os.Args) < 3 {
+			importer.PrintUsage()
+			os.Exit(1)
+		}
+		runImport(os.Args[2])
+		return
+	}
+	runServer()
+}
+
+// buildDSN constructs PostgreSQL connection string from config
+func buildDSN(cfg *configs.Env) string {
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		cfg.PostgresHost, cfg.PostgresPort, cfg.PostgresUser, cfg.PostgresPass, cfg.PostgresDB)
+}
+
+// connectDB establishes database connection with optional GORM config
+func connectDB(dsn string, gormConfig *gorm.Config) (*gorm.DB, error) {
+	if gormConfig == nil {
+		gormConfig = &gorm.Config{}
+	}
+	return gorm.Open(postgres.Open(dsn), gormConfig)
+}
+
+// runImport executes Bible data import
+func runImport(filePath string) {
+	cfg, err := configs.InitConfig()
+	if err != nil {
+		log.Fatalf("❌ Failed to load config: %v", err)
+	}
+
+	fmt.Println("✅ Connecting to PostgreSQL database")
+	db, err := connectDB(buildDSN(cfg), nil)
+	if err != nil {
+		log.Fatalf("❌ Failed to connect to database: %v", err)
+	}
+	defer func() {
+		if sqlDB, err := db.DB(); err == nil {
+			sqlDB.Close()
+		}
+	}()
+
+	fmt.Println("✅ Database connection successful")
+
+	// Initialize OpenAI client for embeddings
+	fmt.Println("✅ Initializing OpenAI client for embeddings")
+	oaiClient := openai.NewClient(
+		option.WithBaseURL(cfg.AzureOpenAIBaseURL),
+		option.WithAPIKey(cfg.AzureOpenAIKey),
+	)
+	openAIService := oaiOpenAI.NewOpenAIService(&oaiClient, cfg.AzureOpenAIModelName)
+
+	if err := importer.Run(db, openAIService, filePath); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+}
+
+// runServer starts the API service
+func runServer() {
 	logger.Init()
 	appLogger := logger.GetAppLogger()
 
@@ -52,40 +112,9 @@ func main() {
 	}
 	appLogger.Info("Configuration loaded successfully")
 
-	// Check if CA certificate exists and register TLS config for Azure MySQL
-	var tlsParam string
-	if _, err := os.Stat(cfg.MysqlCert); err == nil {
-		// Certificate exists, use TLS
-		rootCertPool := x509.NewCertPool()
-		pem, err := os.ReadFile(cfg.MysqlCert)
-		if err != nil {
-			appLogger.Fatalf("Failed to read CA certificate: %v", err)
-		}
-		if ok := rootCertPool.AppendCertsFromPEM(pem); !ok {
-			appLogger.Fatal("Failed to append CA certificate to pool")
-		}
-		mysqlDriver.RegisterTLSConfig("azure", &tls.Config{
-			RootCAs: rootCertPool,
-		})
-		tlsParam = "&tls=azure"
-		appLogger.Infof("TLS configuration registered for Azure MySQL (cert: %s)", cfg.MysqlCert)
-	} else {
-		// Certificate not found, use plain connection (for local development)
-		tlsParam = ""
-		appLogger.Infof("CA certificate not found at %s, using non-TLS connection for local development", cfg.MysqlCert)
-	}
-
-	dsn := cfg.MysqlUser + ":" + cfg.MysqlPass + "@tcp(" + cfg.MysqlHost + ":" + cfg.MysqlPort + ")/" + cfg.MysqlDB + "?charset=utf8mb4&parseTime=True&loc=Local" + tlsParam
-
-	// Create custom GORM logger with JSON format
+	appLogger.Info("Connecting to PostgreSQL database")
 	customGormLogger := logger.NewGormLogger(appLogger, gormLogger.Warn)
-
-	db, err := gorm.Open(mysql.New(mysql.Config{
-		DSN:               dsn,
-		DefaultStringSize: 256,
-	}), &gorm.Config{
-		Logger: customGormLogger,
-	})
+	db, err := connectDB(buildDSN(cfg), &gorm.Config{Logger: customGormLogger})
 	if err != nil {
 		appLogger.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -93,6 +122,8 @@ func main() {
 
 	m := gormigrate.New(db, gormigrate.DefaultOptions, []*gormigrate.Migration{
 		migrations.InitialSchema,
+		migrations.AddHybridSearch,
+		migrations.AddSynonyms,
 	})
 	if err = m.Migrate(); err != nil {
 		appLogger.Fatalf("Database migration failed: %v", err)
@@ -100,15 +131,13 @@ func main() {
 	appLogger.Info("Database migration completed successfully")
 
 	store := models.NewStore(db)
-
 	httpClient := &http.Client{Timeout: 30 * time.Second}
-
 	oaiClient := openai.NewClient(
 		option.WithBaseURL(cfg.AzureOpenAIBaseURL),
 		option.WithAPIKey(cfg.AzureOpenAIKey),
 	)
 
-	api := server.NewAPI(store, &oaiClient, httpClient, cfg.AzureAISearchBaseURL, cfg.AzureAISearchQueryKey, cfg.AzureAISearchIndexName, cfg.AzureAISearchAPIVersion, cfg.AzureOpenAIModelName)
+	api := server.NewAPI(store, &oaiClient, httpClient, cfg.AzureOpenAIModelName)
 	router := api.RegisterRoutes()
 
 	appLogger.Infof("Starting server on port %s", cfg.ServerPort)

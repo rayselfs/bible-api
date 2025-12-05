@@ -1,8 +1,5 @@
 .data
 .DS_Store
-
-# TLS Certificate (downloaded locally, included in Docker build)
-DigiCertGlobalRootG2.crt.pem
-
-cmd/import
-Import.Dockerfile
+env.sh
+venv
+data

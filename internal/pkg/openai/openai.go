@@ -1,4 +1,4 @@
-package aisearch
+package openai
 
 import (
 	"context"

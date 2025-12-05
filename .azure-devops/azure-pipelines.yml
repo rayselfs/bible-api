@@ -48,33 +48,3 @@ steps:
       containerRegistry: 'alive-acr'
       repository: '$(repository)'
       tags: '$(IMAGE_TAG)'
-
-  - task: AzureCLI@2
-    displayName: 'Deploy to Azure Container App'
-    inputs:
-      azureSubscription: 'HHC-Alive'
-      scriptType: 'bash'
-      scriptLocation: 'inlineScript'
-      inlineScript: |
-        echo "Checking if Container App $(containerAppName) exists..."
-        
-        # Check if Container App exists
-        APP_EXISTS=$(az containerapp show \
-          --name $(containerAppName) \
-          --resource-group $(resourceGroup) \
-          --query "name" -o tsv 2>/dev/null || echo "")
-        
-        if [ -z "$APP_EXISTS" ]; then
-          echo "Container App $(containerAppName) does not exist. Skipping deployment."
-          echo "Please create the Container App manually if you want to enable automatic deployment."
-        else
-          echo "Container App exists, updating with image $(registry)/$(repository):$(IMAGE_TAG)..."
-          
-          az containerapp update \
-            --name $(containerAppName) \
-            --resource-group $(resourceGroup) \
-            --image $(registry)/$(repository):$(IMAGE_TAG) \
-            --output table
-          
-          echo "Deployment completed!"
-        fi

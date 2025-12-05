@@ -5,19 +5,12 @@ import (
 )
 
 type Env struct {
-	MysqlHost  string `env:"MYSQL_HOST" envDefault:"localhost"`
-	MysqlPort  string `env:"MYSQL_PORT" envDefault:"3306"`
-	MysqlUser  string `env:"MYSQL_USER" envDefault:"bible"`
-	MysqlPass  string `env:"MYSQL_PASS" envDefault:"bible"`
-	MysqlDB    string `env:"MYSQL_DB" envDefault:"bible"`
-	MysqlCert  string `env:"MYSQL_CERT" envDefault:"/app/DigiCertGlobalRootG2.crt.pem"`
-	ServerPort string `env:"SERVER_PORT" envDefault:"8080"`
-
-	// Azure AI Search configuration
-	AzureAISearchBaseURL    string `env:"AZURE_AI_SEARCH_BASE_URL"`
-	AzureAISearchQueryKey   string `env:"AZURE_AI_SEARCH_QUERY_KEY"`
-	AzureAISearchIndexName  string `env:"AZURE_AI_SEARCH_INDEX_NAME"`
-	AzureAISearchAPIVersion string `env:"AZURE_AI_SEARCH_API_VERSION" envDefault:"2023-11-01"`
+	PostgresHost string `env:"POSTGRES_HOST" envDefault:"localhost"`
+	PostgresPort string `env:"POSTGRES_PORT" envDefault:"5432"`
+	PostgresUser string `env:"POSTGRES_USER" envDefault:"bible"`
+	PostgresPass string `env:"POSTGRES_PASS" envDefault:"bible"`
+	PostgresDB   string `env:"POSTGRES_DB" envDefault:"bible"`
+	ServerPort   string `env:"SERVER_PORT" envDefault:"9999"`
 
 	// Azure OpenAI configuration for search query embedding
 	AzureOpenAIBaseURL   string `env:"AZURE_OPENAI_BASE_URL"`
