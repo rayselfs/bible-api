@@ -54,8 +54,8 @@ func main() {
 
 // buildDSN constructs PostgreSQL connection string from config
 func buildDSN(cfg *configs.Env) string {
-	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		cfg.PostgresHost, cfg.PostgresPort, cfg.PostgresUser, cfg.PostgresPass, cfg.PostgresDB)
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		cfg.PostgresHost, cfg.PostgresPort, cfg.PostgresUser, cfg.PostgresPass, cfg.PostgresDB, cfg.PostgresSSLMode)
 }
 
 // connectDB establishes database connection with optional GORM config
@@ -123,7 +123,6 @@ func runServer() {
 	m := gormigrate.New(db, gormigrate.DefaultOptions, []*gormigrate.Migration{
 		migrations.InitialSchema,
 		migrations.AddHybridSearch,
-		migrations.AddSynonyms,
 	})
 	if err = m.Migrate(); err != nil {
 		appLogger.Fatalf("Database migration failed: %v", err)
