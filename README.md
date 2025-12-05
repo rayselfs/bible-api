@@ -129,6 +129,7 @@ bible-api/
    export POSTGRES_USER=bible
    export POSTGRES_PASS=bible
    export POSTGRES_DB=bible
+   export POSTGRES_SSLMODE=disable  # disable, require, verify-full, etc.
    export SERVER_PORT=9999
 
    # Azure OpenAI configuration (required for embeddings)
@@ -206,6 +207,7 @@ docker run -p 9999:9999 \
   -e POSTGRES_USER=bible \
   -e POSTGRES_PASS=bible \
   -e POSTGRES_DB=bible \
+  -e POSTGRES_SSLMODE=disable \
   -e AZURE_OPENAI_BASE_URL="https://your-service.openai.azure.com/openai/v1/" \
   -e AZURE_OPENAI_KEY="your-api-key" \
   -e AZURE_OPENAI_MODEL_NAME="text-embedding-3-small" \
@@ -223,10 +225,17 @@ The application uses environment variables for configuration:
 | `POSTGRES_USER`             | PostgreSQL username                | `bible`                |
 | `POSTGRES_PASS`             | PostgreSQL password                | `bible`                |
 | `POSTGRES_DB`               | PostgreSQL database name           | `bible`                |
+| `POSTGRES_SSLMODE`          | PostgreSQL SSL mode                | `disable`              |
 | `SERVER_PORT`               | Server port                        | `9999`                 |
 | `AZURE_OPENAI_BASE_URL`     | Azure OpenAI base URL              | Required for embedding |
 | `AZURE_OPENAI_KEY`          | Azure OpenAI API key                | Required for embedding |
 | `AZURE_OPENAI_MODEL_NAME`   | Azure OpenAI model name            | Required for embedding |
+
+**PostgreSQL SSL Mode Options:**
+- `disable`: No SSL (default, for local development)
+- `require`: Require SSL connection
+- `verify-ca`: Require SSL and verify CA
+- `verify-full`: Require SSL, verify CA and hostname
 
 **Note**: The database must have the `pgvector` extension installed. This is automatically handled when using Docker Compose.
 
