@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"hhc/bible-api/internal/models"
@@ -41,7 +43,9 @@ type JSONVerse struct {
 }
 
 // Run executes the Bible data import
-func Run(db *gorm.DB, openAIService *openai.OpenAIService, filePath string) error {
+// If bookNum and chapterNum are both 0, imports the entire file
+// Otherwise, imports only the specified book and chapter
+func Run(db *gorm.DB, openAIService *openai.OpenAIService, filePath string, bookNum uint, chapterNum uint) error {
 	// Check if file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return fmt.Errorf("file not found: %s", filePath)
@@ -62,14 +66,71 @@ func Run(db *gorm.DB, openAIService *openai.OpenAIService, filePath string) erro
 
 	fmt.Printf("Successfully read JSON file\n")
 	fmt.Printf("Version: %s (%s)\n", bibleData.Version.Name, bibleData.Version.Code)
-	fmt.Printf("Books: %d\n", len(bibleData.Books))
 
-	// Start import
-	if err := importBibleData(db, openAIService, &bibleData); err != nil {
-		return fmt.Errorf("import failed: %v", err)
+	// If bookNum and chapterNum are specified, import only that chapter
+	if bookNum > 0 && chapterNum > 0 {
+		fmt.Printf("Importing book %d, chapter %d only\n", bookNum, chapterNum)
+		if err := importSingleChapter(db, openAIService, &bibleData, bookNum, chapterNum); err != nil {
+			return fmt.Errorf("import failed: %v", err)
+		}
+	} else {
+		fmt.Printf("Books: %d\n", len(bibleData.Books))
+		// Start full import
+		if err := importBibleData(db, openAIService, &bibleData); err != nil {
+			return fmt.Errorf("import failed: %v", err)
+		}
 	}
 
 	fmt.Println("🎉 Import completed!")
+	return nil
+}
+
+// ImportAllFromDataDir scans the specified directory and imports all JSON files
+func ImportAllFromDataDir(db *gorm.DB, openAIService *openai.OpenAIService, dataDir string) error {
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		return fmt.Errorf("data directory not found: %s", dataDir)
+	}
+
+	fmt.Printf("Scanning directory: %s\n", dataDir)
+
+	// Find all JSON files
+	var jsonFiles []string
+	err := filepath.Walk(dataDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".json") {
+			jsonFiles = append(jsonFiles, path)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to scan directory: %v", err)
+	}
+
+	if len(jsonFiles) == 0 {
+		return fmt.Errorf("no JSON files found in %s", dataDir)
+	}
+
+	fmt.Printf("Found %d JSON file(s)\n\n", len(jsonFiles))
+
+	// Import each file
+	for i, filePath := range jsonFiles {
+		fmt.Printf("%s\n", strings.Repeat("=", 60))
+		fmt.Printf("[%d/%d] Importing: %s\n", i+1, len(jsonFiles), filePath)
+		fmt.Printf("%s\n", strings.Repeat("=", 60))
+		fmt.Println()
+
+		if err := Run(db, openAIService, filePath, 0, 0); err != nil {
+			fmt.Printf("\n❌ Failed to import %s: %v\n\n", filePath, err)
+			continue
+		}
+
+		fmt.Println()
+	}
+
+	fmt.Println("🎉 All imports completed!")
 	return nil
 }
 
@@ -110,6 +171,7 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 	totalBooks := len(data.Books)
 	totalChapters := 0
 	totalVerses := 0
+	totalUpdatedVerses := 0
 	totalVectors := 0
 
 	ctx := context.Background()
@@ -117,49 +179,113 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 	for i, bookData := range data.Books {
 		fmt.Printf("\nImporting book %d/%d: %s\n", i+1, totalBooks, bookData.Name)
 
-		book := models.Books{
-			VersionID:    version.ID,
-			Number:       bookData.Number,
-			Name:         bookData.Name,
-			Abbreviation: bookData.Abbreviation,
-		}
-
-		if err := tx.Create(&book).Error; err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to create book %s: %v", bookData.Name, err)
+		// Check if book already exists
+		var book models.Books
+		if err := tx.Where("version_id = ? AND number = ?", version.ID, bookData.Number).First(&book).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				// Create new book
+				book = models.Books{
+					VersionID:    version.ID,
+					Number:       bookData.Number,
+					Name:         bookData.Name,
+					Abbreviation: bookData.Abbreviation,
+				}
+				if err := tx.Create(&book).Error; err != nil {
+					tx.Rollback()
+					return fmt.Errorf("failed to create book %s: %v", bookData.Name, err)
+				}
+				fmt.Printf("  Created book: %s\n", book.Name)
+			} else {
+				tx.Rollback()
+				return fmt.Errorf("failed to query book %s: %v", bookData.Name, err)
+			}
+		} else {
+			// Update existing book (name or abbreviation might have changed)
+			book.Name = bookData.Name
+			book.Abbreviation = bookData.Abbreviation
+			if err := tx.Save(&book).Error; err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to update book %s: %v", bookData.Name, err)
+			}
+			fmt.Printf("  Updated book: %s\n", book.Name)
 		}
 
 		bookVerseCount := 0
 		bookVectorCount := 0
+		bookUpdatedCount := 0
 
 		// 3. Import chapters
 		for _, chapterData := range bookData.Chapters {
-			chapter := models.Chapters{
-				BookID: book.ID,
-				Number: chapterData.Number,
+			// Check if chapter already exists
+			var chapter models.Chapters
+			isNewChapter := false
+			if err := tx.Where("book_id = ? AND number = ?", book.ID, chapterData.Number).First(&chapter).Error; err != nil {
+				if err == gorm.ErrRecordNotFound {
+					// Create new chapter
+					chapter = models.Chapters{
+						BookID: book.ID,
+						Number: chapterData.Number,
+					}
+					if err := tx.Create(&chapter).Error; err != nil {
+						tx.Rollback()
+						return fmt.Errorf("failed to create chapter %s %d: %v", bookData.Name, chapterData.Number, err)
+					}
+					isNewChapter = true
+				} else {
+					tx.Rollback()
+					return fmt.Errorf("failed to query chapter %s %d: %v", bookData.Name, chapterData.Number, err)
+				}
 			}
+			// Chapter exists, continue to import verses
 
-			if err := tx.Create(&chapter).Error; err != nil {
-				tx.Rollback()
-				return fmt.Errorf("failed to create chapter %s %d: %v", bookData.Name, chapterData.Number, err)
+			if isNewChapter {
+				totalChapters++
 			}
-
-			totalChapters++
 
 			// 4. Import verses with embeddings
 			for _, verseData := range chapterData.Verses {
-				verse := models.Verses{
-					ChapterID: chapter.ID,
-					Number:    verseData.Number,
-					Text:      verseData.Text,
+				// Check if verse already exists
+				var verse models.Verses
+				var isNewVerse bool
+				if err := tx.Where("chapter_id = ? AND number = ?", chapter.ID, verseData.Number).First(&verse).Error; err != nil {
+					if err == gorm.ErrRecordNotFound {
+						// Create new verse
+						verse = models.Verses{
+							ChapterID: chapter.ID,
+							Number:    verseData.Number,
+							Text:      verseData.Text,
+						}
+						if err := tx.Create(&verse).Error; err != nil {
+							tx.Rollback()
+							return fmt.Errorf("failed to create verse %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
+						}
+						isNewVerse = true
+					} else {
+						tx.Rollback()
+						return fmt.Errorf("failed to query verse %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
+					}
+				} else {
+					// Update existing verse
+					verse.Text = verseData.Text
+					if err := tx.Save(&verse).Error; err != nil {
+						tx.Rollback()
+						return fmt.Errorf("failed to update verse %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
+					}
+					isNewVerse = false
+					bookUpdatedCount++
+
+					// Delete existing vector if verse was updated
+					if err := tx.Where("verse_id = ?", verse.ID).Delete(&models.BibleVectors{}).Error; err != nil {
+						tx.Rollback()
+						return fmt.Errorf("failed to delete existing vector for %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
+					}
 				}
 
-				if err := tx.Create(&verse).Error; err != nil {
-					tx.Rollback()
-					return fmt.Errorf("failed to create verse %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
+				if isNewVerse {
+					totalVerses++
+				} else {
+					totalUpdatedVerses++
 				}
-
-				totalVerses++
 				bookVerseCount++
 
 				// 5. Generate and store embedding
@@ -191,14 +317,22 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 
 				// Progress indicator every 10 verses
 				if bookVerseCount%10 == 0 {
-					fmt.Printf("\r  Progress: %d verses, %d vectors", bookVerseCount, bookVectorCount)
+					if bookUpdatedCount > 0 {
+						fmt.Printf("\r  Progress: %d verses (%d new, %d updated), %d vectors", bookVerseCount, bookVerseCount-bookUpdatedCount, bookUpdatedCount, bookVectorCount)
+					} else {
+						fmt.Printf("\r  Progress: %d verses, %d vectors", bookVerseCount, bookVectorCount)
+					}
 				}
 
 				// Rate limiting: avoid hitting API rate limits
 				time.Sleep(20 * time.Millisecond)
 			}
 		}
-		fmt.Printf("\r  Completed: %d verses, %d vectors\n", bookVerseCount, bookVectorCount)
+		if bookUpdatedCount > 0 {
+			fmt.Printf("\r  Completed: %d verses (%d new, %d updated), %d vectors\n", bookVerseCount, bookVerseCount-bookUpdatedCount, bookUpdatedCount, bookVectorCount)
+		} else {
+			fmt.Printf("\r  Completed: %d verses, %d vectors\n", bookVerseCount, bookVectorCount)
+		}
 	}
 
 	// Commit transaction
@@ -206,12 +340,210 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 		return fmt.Errorf("failed to commit transaction: %v", err)
 	}
 
-	fmt.Printf("Import Statistics:")
-	fmt.Printf("Version: %s (%s)", version.Name, version.Code)
-	fmt.Printf("Books: %d", totalBooks)
-	fmt.Printf("Chapters: %d", totalChapters)
-	fmt.Printf("Verses: %d", totalVerses)
-	fmt.Printf("Vectors: %d", totalVectors)
+	fmt.Printf("\nImport Statistics:\n")
+	fmt.Printf("  Version: %s (%s)\n", version.Name, version.Code)
+	fmt.Printf("  Books: %d\n", totalBooks)
+	fmt.Printf("  Chapters: %d\n", totalChapters)
+	if totalUpdatedVerses > 0 {
+		fmt.Printf("  Verses: %d new, %d updated (total: %d)\n", totalVerses, totalUpdatedVerses, totalVerses+totalUpdatedVerses)
+	} else {
+		fmt.Printf("  Verses: %d\n", totalVerses)
+	}
+	fmt.Printf("  Vectors: %d\n", totalVectors)
+
+	return nil
+}
+
+// importSingleChapter imports a single chapter from the Bible data
+func importSingleChapter(db *gorm.DB, openAIService *openai.OpenAIService, data *JSONBibleData, bookNum uint, chapterNum uint) error {
+	// Find the book and chapter in the JSON data
+	var targetBook *JSONBook
+	var targetChapter *JSONChapter
+
+	for i := range data.Books {
+		if data.Books[i].Number == bookNum {
+			targetBook = &data.Books[i]
+			for j := range targetBook.Chapters {
+				if targetBook.Chapters[j].Number == chapterNum {
+					targetChapter = &targetBook.Chapters[j]
+					break
+				}
+			}
+			break
+		}
+	}
+
+	if targetBook == nil {
+		return fmt.Errorf("book %d not found in JSON data", bookNum)
+	}
+	if targetChapter == nil {
+		return fmt.Errorf("chapter %d not found in book %d", chapterNum, bookNum)
+	}
+
+	// Begin transaction
+	tx := db.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to begin transaction: %v", tx.Error)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1. Get or create version
+	var version models.Versions
+	if err := tx.Where("code = ?", data.Version.Code).First(&version).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			version = models.Versions{
+				Code: data.Version.Code,
+				Name: data.Version.Name,
+			}
+			if err := tx.Create(&version).Error; err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to create version: %v", err)
+			}
+			fmt.Printf("Created version: %s (ID: %d)\n", version.Name, version.ID)
+		} else {
+			tx.Rollback()
+			return fmt.Errorf("failed to query version: %v", err)
+		}
+	} else {
+		fmt.Printf("Using existing version: %s (ID: %d)\n", version.Name, version.ID)
+	}
+
+	// 2. Get or create book
+	var book models.Books
+	if err := tx.Where("version_id = ? AND number = ?", version.ID, targetBook.Number).First(&book).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			book = models.Books{
+				VersionID:    version.ID,
+				Number:       targetBook.Number,
+				Name:         targetBook.Name,
+				Abbreviation: targetBook.Abbreviation,
+			}
+			if err := tx.Create(&book).Error; err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to create book: %v", err)
+			}
+			fmt.Printf("Created book: %s (ID: %d)\n", book.Name, book.ID)
+		} else {
+			tx.Rollback()
+			return fmt.Errorf("failed to query book: %v", err)
+		}
+	} else {
+		fmt.Printf("Using existing book: %s (ID: %d)\n", book.Name, book.ID)
+	}
+
+	// 3. Get or create chapter
+	var chapter models.Chapters
+	if err := tx.Where("book_id = ? AND number = ?", book.ID, targetChapter.Number).First(&chapter).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			chapter = models.Chapters{
+				BookID: book.ID,
+				Number: targetChapter.Number,
+			}
+			if err := tx.Create(&chapter).Error; err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to create chapter: %v", err)
+			}
+			fmt.Printf("Created chapter: %d (ID: %d)\n", chapter.Number, chapter.ID)
+		} else {
+			tx.Rollback()
+			return fmt.Errorf("failed to query chapter: %v", err)
+		}
+	} else {
+		fmt.Printf("Using existing chapter: %d (ID: %d)\n", chapter.Number, chapter.ID)
+	}
+
+	// 4. Delete existing verses and vectors for this chapter
+	fmt.Printf("Deleting existing verses for %s %d...\n", book.Name, chapter.Number)
+
+	// Delete vectors first (foreign key constraint)
+	if err := tx.Exec(`
+		DELETE FROM bible_vectors 
+		WHERE verse_id IN (
+			SELECT id FROM verses WHERE chapter_id = ?
+		)
+	`, chapter.ID).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to delete existing vectors: %v", err)
+	}
+
+	// Delete verses
+	if err := tx.Where("chapter_id = ?", chapter.ID).Delete(&models.Verses{}).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to delete existing verses: %v", err)
+	}
+
+	fmt.Printf("Deleted existing data. Importing %d verses...\n", len(targetChapter.Verses))
+
+	// 5. Import verses with embeddings
+	ctx := context.Background()
+	importedVerses := 0
+	importedVectors := 0
+
+	for _, verseData := range targetChapter.Verses {
+		verse := models.Verses{
+			ChapterID: chapter.ID,
+			Number:    verseData.Number,
+			Text:      verseData.Text,
+		}
+
+		if err := tx.Create(&verse).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to create verse %s %d:%d: %v", book.Name, chapter.Number, verseData.Number, err)
+		}
+
+		importedVerses++
+
+		// Generate and store embedding
+		embedding64, err := openAIService.GetEmbedding(ctx, verseData.Text)
+		if err != nil {
+			fmt.Printf("\n  [ERROR] Failed to get embedding for %s %d:%d: %v\n", book.Name, chapter.Number, verseData.Number, err)
+			continue
+		}
+
+		// Convert []float64 to []float32 for pgvector
+		embedding32 := make([]float32, len(embedding64))
+		for j, v := range embedding64 {
+			embedding32[j] = float32(v)
+		}
+
+		bibleVector := models.BibleVectors{
+			VerseID:   verse.ID,
+			Embedding: pgvector.NewVector(embedding32),
+		}
+
+		if err := tx.Create(&bibleVector).Error; err != nil {
+			fmt.Printf("\n  [ERROR] Failed to store embedding for %s %d:%d: %v\n", book.Name, chapter.Number, verseData.Number, err)
+			continue
+		}
+
+		importedVectors++
+
+		// Progress indicator every 10 verses
+		if importedVerses%10 == 0 {
+			fmt.Printf("\r  Progress: %d/%d verses, %d vectors", importedVerses, len(targetChapter.Verses), importedVectors)
+		}
+
+		// Rate limiting
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	fmt.Printf("\r  Completed: %d verses, %d vectors\n", importedVerses, importedVectors)
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	fmt.Printf("\nImport Statistics:\n")
+	fmt.Printf("  Version: %s (%s)\n", version.Name, version.Code)
+	fmt.Printf("  Book: %s (%d)\n", book.Name, book.Number)
+	fmt.Printf("  Chapter: %d\n", chapter.Number)
+	fmt.Printf("  Verses: %d\n", importedVerses)
+	fmt.Printf("  Vectors: %d\n", importedVectors)
 
 	return nil
 }
@@ -219,9 +551,22 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 // PrintUsage prints the import command usage
 func PrintUsage() {
 	fmt.Println("Bible Data Import Tool")
-	fmt.Println("Usage: ./app import <JSON_FILE_PATH>")
+	fmt.Println("")
+	fmt.Println("Usage:")
+	fmt.Println("  ./app import -d <DIRECTORY>                      # Import all JSON files from directory")
+	fmt.Println("  ./app import -f <JSON_FILE>                     # Import a single JSON file")
+	fmt.Println("  ./app import -f <JSON_FILE> -b <BOOK> -c <CHAPTER>  # Import a single chapter")
+	fmt.Println("")
+	fmt.Println("Flags:")
+	fmt.Println("  -d    Directory path containing JSON files to import")
+	fmt.Println("  -f    JSON file path to import")
+	fmt.Println("  -b    Book number (required with -c)")
+	fmt.Println("  -c    Chapter number (required with -b)")
 	fmt.Println("")
 	fmt.Println("Examples:")
-	fmt.Println("  ./app import data/bible.json")
-	fmt.Println("  ./app import data/bible_simplified.json")
+	fmt.Println("  ./app import -d ./data")
+	fmt.Println("  ./app import -d /path/to/bible/data")
+	fmt.Println("  ./app import -f ./data/bible.json")
+	fmt.Println("  ./app import -f ./data/bible_niv.json -b 1 -c 1    # Import Genesis chapter 1")
+	fmt.Println("  ./app import -f ./data/bible_kjv.json -b 43 -c 3   # Import John chapter 3")
 }

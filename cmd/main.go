@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -42,11 +43,7 @@ import (
 // @BasePath     /
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "import" {
-		if len(os.Args) < 3 {
-			importer.PrintUsage()
-			os.Exit(1)
-		}
-		runImport(os.Args[2])
+		runImport()
 		return
 	}
 	runServer()
@@ -67,7 +64,44 @@ func connectDB(dsn string, gormConfig *gorm.Config) (*gorm.DB, error) {
 }
 
 // runImport executes Bible data import
-func runImport(filePath string) {
+func runImport() {
+	// Parse flags
+	importFlags := flag.NewFlagSet("import", flag.ExitOnError)
+	dirFlag := importFlags.String("d", "", "Directory path containing JSON files to import")
+	fileFlag := importFlags.String("f", "", "JSON file path to import")
+	bookFlag := importFlags.Uint("b", 0, "Book number (required with -c)")
+	chapterFlag := importFlags.Uint("c", 0, "Chapter number (required with -b)")
+
+	// Parse flags from os.Args[2:] (skip "import" command)
+	if err := importFlags.Parse(os.Args[2:]); err != nil {
+		importer.PrintUsage()
+		os.Exit(1)
+	}
+
+	// Validate flags
+	hasDir := *dirFlag != ""
+	hasFile := *fileFlag != ""
+	hasBook := *bookFlag > 0
+	hasChapter := *chapterFlag > 0
+
+	if !hasDir && !hasFile {
+		fmt.Println("❌ Error: Either -d (directory) or -f (file) must be specified")
+		importer.PrintUsage()
+		os.Exit(1)
+	}
+
+	if hasDir && hasFile {
+		fmt.Println("❌ Error: Cannot use both -d and -f at the same time")
+		importer.PrintUsage()
+		os.Exit(1)
+	}
+
+	if (hasBook && !hasChapter) || (!hasBook && hasChapter) {
+		fmt.Println("❌ Error: Both -b (book) and -c (chapter) must be specified together")
+		importer.PrintUsage()
+		os.Exit(1)
+	}
+
 	cfg, err := configs.InitConfig()
 	if err != nil {
 		log.Fatalf("❌ Failed to load config: %v", err)
@@ -94,8 +128,24 @@ func runImport(filePath string) {
 	)
 	openAIService := oaiOpenAI.NewOpenAIService(&oaiClient, cfg.AzureOpenAIModelName)
 
-	if err := importer.Run(db, openAIService, filePath); err != nil {
-		log.Fatalf("❌ %v", err)
+	// Execute import based on flags
+	if hasDir {
+		// Mode 1: Import all JSON files from directory
+		if err := importer.ImportAllFromDataDir(db, openAIService, *dirFlag); err != nil {
+			log.Fatalf("❌ %v", err)
+		}
+	} else if hasFile {
+		if hasBook && hasChapter {
+			// Mode 3: Import single chapter
+			if err := importer.Run(db, openAIService, *fileFlag, *bookFlag, *chapterFlag); err != nil {
+				log.Fatalf("❌ %v", err)
+			}
+		} else {
+			// Mode 2: Import single file
+			if err := importer.Run(db, openAIService, *fileFlag, 0, 0); err != nil {
+				log.Fatalf("❌ %v", err)
+			}
+		}
 	}
 }
 

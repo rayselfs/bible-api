@@ -148,10 +148,13 @@ bible-api/
 5. **Import Bible data**
 
    ```bash
-   # Import a Bible version (generates embeddings automatically)
-   go run cmd/main.go import ./data/bible.json
-   go run cmd/main.go import ./data/bible_niv.json
-   go run cmd/main.go import ./data/bible_kjv.json
+   # Import all JSON files from ./data directory
+   go run cmd/main.go import -d ./data
+
+   # Or import individual files
+   go run cmd/main.go import -f ./data/bible.json
+   go run cmd/main.go import -f ./data/bible_niv.json
+   go run cmd/main.go import -f ./data/bible_kjv.json
    ```
 
 6. **Run the application**
@@ -176,7 +179,7 @@ The `docker-compose.yml` includes PostgreSQL with pgvector extension pre-install
 docker-compose up -d postgres
 
 # Wait for database to be ready, then import data
-go run cmd/main.go import ./data/bible.json
+go run cmd/main.go import -d ./data
 
 # Run the API server
 go run cmd/main.go
@@ -394,16 +397,47 @@ The `scripts/` directory contains Python scripts for fetching Bible data from va
 
 ### Import Bible Data
 
-The application supports importing Bible data from JSON format with automatic embedding generation:
+The application supports importing Bible data from JSON format with automatic embedding generation. The import command uses flags for flexible operation:
+
+#### Command Syntax
 
 ```bash
-# Import a Bible version
-go run cmd/main.go import ./data/bible.json
+# Import all JSON files from a directory
+go run cmd/main.go import -d <DIRECTORY>
 
-# Import multiple versions
-go run cmd/main.go import ./data/bible_niv.json
-go run cmd/main.go import ./data/bible_kjv.json
-go run cmd/main.go import ./data/bible_nkjv.json
+# Import a single JSON file
+go run cmd/main.go import -f <JSON_FILE>
+
+# Import a single chapter from a JSON file
+go run cmd/main.go import -f <JSON_FILE> -b <BOOK> -c <CHAPTER>
+```
+
+#### Flags
+
+- `-d`: Directory path containing JSON files to import
+- `-f`: JSON file path to import
+- `-b`: Book number (required with `-c`)
+- `-c`: Chapter number (required with `-b`)
+
+#### Examples
+
+```bash
+# Import all JSON files from ./data directory
+go run cmd/main.go import -d ./data
+
+# Import all JSON files from a custom directory
+go run cmd/main.go import -d /path/to/bible/data
+
+# Import a single Bible version
+go run cmd/main.go import -f ./data/bible.json
+go run cmd/main.go import -f ./data/bible_niv.json
+go run cmd/main.go import -f ./data/bible_kjv.json
+
+# Import a specific chapter (Genesis chapter 1)
+go run cmd/main.go import -f ./data/bible_niv.json -b 1 -c 1
+
+# Import a specific chapter (John chapter 3)
+go run cmd/main.go import -f ./data/bible_kjv.json -b 43 -c 3
 ```
 
 ### JSON Format
@@ -446,6 +480,34 @@ The import expects JSON files in the following format:
 5. Shows progress and statistics
 
 **Note**: Import can take time due to embedding generation. Progress is shown during import.
+
+### Update Strategy
+
+The import process uses an **intelligent update strategy** to handle existing data:
+
+- **Version**: If a version with the same code exists, it will be reused. Otherwise, a new version is created.
+- **Book**: If a book already exists for the version, it will be updated (name and abbreviation may change). Otherwise, a new book is created.
+- **Chapter**: If a chapter already exists, it will be reused. Otherwise, a new chapter is created.
+- **Verse**: 
+  - If a verse already exists, its text will be **updated** and the old embedding will be **deleted and regenerated**.
+  - If a verse doesn't exist, it will be created with a new embedding.
+- **Vector**: Embeddings are automatically regenerated when verses are updated to ensure consistency.
+
+This means you can safely re-import the same data multiple times. The system will:
+- ✅ Update existing verses with any changes
+- ✅ Regenerate embeddings for updated verses
+- ✅ Skip unchanged data efficiently
+- ✅ Show statistics distinguishing new vs. updated verses
+
+**Example Output:**
+```
+Import Statistics:
+  Version: 和合本（繁體） (CUV-TW)
+  Books: 66
+  Chapters: 1189
+  Verses: 31000 new, 50 updated (total: 31050)
+  Vectors: 31050
+```
 
 ## 🔄 Database Migrations
 
