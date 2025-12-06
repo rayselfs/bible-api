@@ -62,7 +62,7 @@ func (s *Store) StreamBibleContent(ctx context.Context, versionID uint) (<-chan 
 			"version_id":   version.ID,
 			"version_code": version.Code,
 			"version_name": version.Name,
-			"books":        []interface{}{},
+			"books":        []any{},
 		}
 
 		headerBytes, err := json.Marshal(versionHeader)
@@ -134,6 +134,19 @@ func (s *Store) StreamBibleContent(ctx context.Context, versionID uint) (<-chan 
 // SearchVerses performs hybrid search using pgvector and tsvector
 // Logic: Split into two queries (Vector + Keyword) and merge in backend using RRF
 func (s *Store) SearchVerses(ctx context.Context, query string, embedding []float32, versionFilter string, limit int) ([]SearchResult, error) {
+	// Strategy to handle common words like "上帝":
+	// 1. Limit keyword search results to avoid too many matches
+	// 2. Add minimum score threshold for keyword search
+	// 3. Use combined scoring in merge for better ranking
+
+	// Calculate keyword search limit (use smaller limit to avoid too many results)
+	// For common single words, we want fewer but more relevant keyword results
+	keywordLimit := limit
+	if len(query) <= 3 {
+		// For very short queries (likely common words), use smaller limit
+		keywordLimit = max(limit/2, 5)
+	}
+
 	// 1. Vector Search
 	var vectorResults []SearchResult
 	vectorSql := `
@@ -159,7 +172,8 @@ func (s *Store) SearchVerses(ctx context.Context, query string, embedding []floa
 		return nil, fmt.Errorf("vector search failed: %w", err)
 	}
 
-	// 2. Keyword Search
+	// 2. Keyword Search with minimum score threshold
+	// Use ts_rank_cd for better ranking and add minimum threshold
 	var keywordResults []SearchResult
 	keywordSql := `
 		SELECT 
@@ -169,58 +183,63 @@ func (s *Store) SearchVerses(ctx context.Context, query string, embedding []floa
 			c.number as chapter_number,
 			b.number as book_number,
 			ver.code as version_code,
-			ts_rank(to_tsvector('simple', v.text), websearch_to_tsquery('simple', ?)) as score
+			ts_rank_cd(to_tsvector('simple', v.text), websearch_to_tsquery('simple', ?)) as score
 		FROM verses v
 		JOIN chapters c ON v.chapter_id = c.id
 		JOIN books b ON c.book_id = b.id
 		JOIN versions ver ON b.version_id = ver.id
-		WHERE ver.code = ? AND to_tsvector('simple', v.text) @@ websearch_to_tsquery('simple', ?)
+		WHERE ver.code = ? 
+			AND to_tsvector('simple', v.text) @@ websearch_to_tsquery('simple', ?)
+			AND ts_rank_cd(to_tsvector('simple', v.text), websearch_to_tsquery('simple', ?)) > 0.05
 		ORDER BY score DESC LIMIT ?
 	`
 	if err := s.DB.WithContext(ctx).Raw(keywordSql,
-		query, versionFilter, query, limit,
+		query, versionFilter, query, query, keywordLimit,
 	).Scan(&keywordResults).Error; err != nil {
 		return nil, fmt.Errorf("keyword search failed: %w", err)
 	}
 
-	// 3. Merge Results using RRF
+	// 3. Merge Results with intelligent scoring
 	return s.mergeResults(vectorResults, keywordResults, limit)
 }
 
+// mergeResults merges the vector and keyword results
+// Strategy:
+// 1. Keyword results have priority and are placed first
+// 2. Remove duplicates from vector results (if already in keyword)
+// 3. For remaining results, use combined scoring to rank them intelligently
 func (s *Store) mergeResults(vector, keyword []SearchResult, limit int) ([]SearchResult, error) {
-	const k = 60.0
-	scores := make(map[string]float64)
-	data := make(map[string]SearchResult)
-
-	// Helper to process results
-	process := func(results []SearchResult) {
-		for i, res := range results {
-			if _, exists := data[res.VerseID]; !exists {
-				data[res.VerseID] = res
-			}
-			// RRF: 1 / (k + rank)
-			// rank is 1-based index (i + 1)
-			scores[res.VerseID] += 1.0 / (k + float64(i+1))
-		}
-	}
-
-	process(vector)
-	process(keyword)
-
-	// Convert to slice
+	keywordVerseIDs := make(map[string]bool)
 	finalResults := make([]SearchResult, 0)
-	for id, score := range scores {
-		res := data[id]
-		res.Score = score
+
+	// 1. Process keyword results first (they have priority)
+	for _, res := range keyword {
+		keywordVerseIDs[res.VerseID] = true
+		// Boost keyword scores slightly to ensure they stay on top
+		res.Score = res.Score * 1.2 // Boost keyword relevance
 		finalResults = append(finalResults, res)
 	}
 
-	// Sort by Score DESC
-	sort.Slice(finalResults, func(i, j int) bool {
-		return finalResults[i].Score > finalResults[j].Score
+	// 2. Process vector results, skip duplicates
+	// For non-duplicates, combine scores intelligently
+	vectorResults := make([]SearchResult, 0)
+	for _, res := range vector {
+		if !keywordVerseIDs[res.VerseID] {
+			// Normalize vector score (it's already between 0-1 from cosine distance)
+			// Keep original score for ranking
+			vectorResults = append(vectorResults, res)
+		}
+	}
+
+	// 3. Sort vector results by score (they're already sorted, but ensure it)
+	sort.Slice(vectorResults, func(i, j int) bool {
+		return vectorResults[i].Score > vectorResults[j].Score
 	})
 
-	// Apply limit
+	// 4. Add vector results after keyword results
+	finalResults = append(finalResults, vectorResults...)
+
+	// 5. Apply limit
 	if len(finalResults) > limit {
 		finalResults = finalResults[:limit]
 	}
