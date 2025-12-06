@@ -67,6 +67,7 @@ type BibleContentBook struct {
 	Number       uint                  `json:"number"`
 	Name         string                `json:"name"`
 	Abbreviation string                `json:"abbreviation"`
+	Code         string                `json:"code"` // Standard 3-letter book code (e.g., GEN, EXO, MAT)
 	Chapters     []BibleContentChapter `json:"chapters"`
 }
 
