@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"hhc/bible-api/internal/logger"
@@ -43,7 +44,7 @@ type ErrorResponse struct {
 // @Failure      500        {object}  ErrorResponse  "Internal server error"
 // @Router       /api/bible/v1/versions [get]
 func (a *API) HandleGetAllVersions(c *gin.Context) {
-	versions, err := a.store.GetAllVersions()
+	versions, err := a.store.GetAllVersions(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to retrieve versions"})
 		return
@@ -89,7 +90,7 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 	defer cancel()
 
 	// Start streaming
-	contentChan, errorChan := a.store.StreamBibleContent(ctx, uint(id))
+	contentChan, errorChan := a.store.StreamBibleContent(c, ctx, uint(id))
 
 	// Create a flusher to ensure immediate delivery
 	flusher, ok := c.Writer.(http.Flusher)
@@ -183,8 +184,14 @@ func (a *API) HandleSearch(c *gin.Context) {
 		queryVector[i] = float32(v)
 	}
 
-	results, err := a.store.SearchVerses(ctx, queryText, queryVector, versionFilter, topK)
+	results, err := a.store.SearchVerses(c, ctx, queryText, queryVector, versionFilter, topK)
 	if err != nil {
+		// Check if it's a forbidden error
+		errMsg := err.Error()
+		if strings.Contains(strings.ToLower(errMsg), "forbidden") {
+			c.JSON(http.StatusForbidden, ErrorResponse{Error: errMsg})
+			return
+		}
 		logger.GetAppLogger().Errorf("Failed to execute Hybrid Search: %v", err)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to retrieve search results"})
 		return

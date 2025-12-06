@@ -1,27 +1,26 @@
 package main
 
 import (
+	"context"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"hhc/bible-api/configs"
+	"hhc/bible-api/internal/database"
 	importer "hhc/bible-api/internal/import"
 	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
 	oaiOpenAI "hhc/bible-api/internal/pkg/openai"
 	"hhc/bible-api/internal/server"
-	"hhc/bible-api/migrations"
 
-	"github.com/go-gormigrate/gormigrate/v2"
+	"github.com/gin-gonic/gin"
 	"github.com/openai/openai-go/v2"
 	"github.com/openai/openai-go/v2/option"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	gormLogger "gorm.io/gorm/logger"
 
 	_ "hhc/bible-api/docs"
 )
@@ -49,20 +48,6 @@ func main() {
 	runServer()
 }
 
-// buildDSN constructs PostgreSQL connection string from config
-func buildDSN(cfg *configs.Env) string {
-	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		cfg.PostgresHost, cfg.PostgresPort, cfg.PostgresUser, cfg.PostgresPass, cfg.PostgresDB, cfg.PostgresSSLMode)
-}
-
-// connectDB establishes database connection with optional GORM config
-func connectDB(dsn string, gormConfig *gorm.Config) (*gorm.DB, error) {
-	if gormConfig == nil {
-		gormConfig = &gorm.Config{}
-	}
-	return gorm.Open(postgres.Open(dsn), gormConfig)
-}
-
 // runImport executes Bible data import
 func runImport() {
 	// Parse flags
@@ -85,43 +70,31 @@ func runImport() {
 	hasChapter := *chapterFlag > 0
 
 	if !hasDir && !hasFile {
-		fmt.Println("❌ Error: Either -d (directory) or -f (file) must be specified")
+		log.Fatalf("error: either -d (directory) or -f (file) must be specified")
 		importer.PrintUsage()
 		os.Exit(1)
 	}
 
 	if hasDir && hasFile {
-		fmt.Println("❌ Error: Cannot use both -d and -f at the same time")
+		log.Fatalf("error: cannot use both -d and -f at the same time")
 		importer.PrintUsage()
 		os.Exit(1)
 	}
 
 	if (hasBook && !hasChapter) || (!hasBook && hasChapter) {
-		fmt.Println("❌ Error: Both -b (book) and -c (chapter) must be specified together")
+		log.Fatalf("error: both -b (book) and -c (chapter) must be specified together")
 		importer.PrintUsage()
 		os.Exit(1)
 	}
 
 	cfg, err := configs.InitConfig()
 	if err != nil {
-		log.Fatalf("❌ Failed to load config: %v", err)
+		log.Fatalf("error: failed to load config: %v", err)
 	}
 
-	fmt.Println("✅ Connecting to PostgreSQL database")
-	db, err := connectDB(buildDSN(cfg), nil)
-	if err != nil {
-		log.Fatalf("❌ Failed to connect to database: %v", err)
-	}
-	defer func() {
-		if sqlDB, err := db.DB(); err == nil {
-			sqlDB.Close()
-		}
-	}()
+	database.Connect(cfg)
+	defer database.Close()
 
-	fmt.Println("✅ Database connection successful")
-
-	// Initialize OpenAI client for embeddings
-	fmt.Println("✅ Initializing OpenAI client for embeddings")
 	oaiClient := openai.NewClient(
 		option.WithBaseURL(cfg.AzureOpenAIBaseURL),
 		option.WithAPIKey(cfg.AzureOpenAIKey),
@@ -131,19 +104,19 @@ func runImport() {
 	// Execute import based on flags
 	if hasDir {
 		// Mode 1: Import all JSON files from directory
-		if err := importer.ImportAllFromDataDir(db, openAIService, *dirFlag); err != nil {
-			log.Fatalf("❌ %v", err)
+		if err := importer.ImportAllFromDataDir(database.DB, openAIService, *dirFlag); err != nil {
+			log.Fatalf("error: %v", err)
 		}
 	} else if hasFile {
 		if hasBook && hasChapter {
 			// Mode 3: Import single chapter
-			if err := importer.Run(db, openAIService, *fileFlag, *bookFlag, *chapterFlag); err != nil {
-				log.Fatalf("❌ %v", err)
+			if err := importer.Run(database.DB, openAIService, *fileFlag, *bookFlag, *chapterFlag); err != nil {
+				log.Fatalf("error: %v", err)
 			}
 		} else {
 			// Mode 2: Import single file
-			if err := importer.Run(db, openAIService, *fileFlag, 0, 0); err != nil {
-				log.Fatalf("❌ %v", err)
+			if err := importer.Run(database.DB, openAIService, *fileFlag, 0, 0); err != nil {
+				log.Fatalf("error: %v", err)
 			}
 		}
 	}
@@ -151,49 +124,74 @@ func runImport() {
 
 // runServer starts the API service
 func runServer() {
+	// Initialize Logger
 	logger.Init()
 	appLogger := logger.GetAppLogger()
 
 	appLogger.Info("Starting Bible API Service...")
 
+	// Load Config
 	cfg, err := configs.InitConfig()
 	if err != nil {
 		appLogger.Fatalf("Failed to load config: %v", err)
 	}
 	appLogger.Info("Configuration loaded successfully")
 
-	appLogger.Info("Connecting to PostgreSQL database")
-	customGormLogger := logger.NewGormLogger(appLogger, gormLogger.Warn)
-	db, err := connectDB(buildDSN(cfg), &gorm.Config{Logger: customGormLogger})
-	if err != nil {
-		appLogger.Fatalf("Failed to connect to database: %v", err)
-	}
-	appLogger.Info("Database connection successful")
+	// Connect to Database
+	database.Connect(cfg)
+	database.Migrate()
 
-	m := gormigrate.New(db, gormigrate.DefaultOptions, []*gormigrate.Migration{
-		migrations.InitialSchema,
-		migrations.AddHybridSearch,
-	})
-	if err = m.Migrate(); err != nil {
-		appLogger.Fatalf("Database migration failed: %v", err)
-	}
-	appLogger.Info("Database migration completed successfully")
-
-	store := models.NewStore(db)
+	// Initialize Services
+	store := models.NewStore(database.DB)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	oaiClient := openai.NewClient(
 		option.WithBaseURL(cfg.AzureOpenAIBaseURL),
 		option.WithAPIKey(cfg.AzureOpenAIKey),
 	)
 
+	// Initialize Handlers
 	api := server.NewAPI(store, &oaiClient, httpClient, cfg.AzureOpenAIModelName)
-	router := api.RegisterRoutes()
 
-	appLogger.Infof("Starting server on port %s", cfg.ServerPort)
-	appLogger.Infof("Swagger UI available at http://localhost:%s/swagger/index.html", cfg.ServerPort)
-	appLogger.Info("Bible API Service started successfully")
+	// Setup Router
+	r := gin.Default()
+	api.SetupRoutes(r)
 
-	if err := router.Run(":" + cfg.ServerPort); err != nil {
-		appLogger.Fatalf("Server startup failed: %s", err)
+	// Setup Server with timeouts
+	srv := &http.Server{
+		Addr:         ":" + cfg.ServerPort,
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
+
+	// Start Server in Goroutine
+	go func() {
+		appLogger.Infof("Server starting on port %s", cfg.ServerPort)
+		appLogger.Infof("Swagger UI available at http://localhost:%s/swagger/index.html", cfg.ServerPort)
+		appLogger.Info("Bible API Service started successfully")
+
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			appLogger.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	// Graceful Shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	appLogger.Info("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		appLogger.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	// Clean up resources
+	appLogger.Info("Closing database connection...")
+	database.Close()
+
+	appLogger.Info("Server exiting")
 }

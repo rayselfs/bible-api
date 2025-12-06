@@ -4,10 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hhc/bible-api/internal/utils"
+	"slices"
 	"sort"
 
+	"github.com/gin-gonic/gin"
 	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
+)
+
+const (
+	// PermissionBibleRead is the permission required to read all Bible versions
+	PermissionBibleRead = "bible:read"
+)
+
+var (
+	// publicVersionList is the list of public Bible version codes accessible without permission
+	publicVersionList = []string{"CUNP-TC", "CUNP-SC", "KJV"}
 )
 
 // Store contains a *gorm.DB instance
@@ -17,6 +30,39 @@ type Store struct {
 
 func NewStore(db *gorm.DB) *Store {
 	return &Store{DB: db}
+}
+
+// checkPermission checks if the user has the specified permission from gin context
+func checkPermission(c *gin.Context, permission string) bool {
+	permissionsStr, exists := c.Get("permissions")
+	if !exists {
+		return false
+	}
+
+	permissions, ok := permissionsStr.(string)
+	if !ok {
+		return false
+	}
+
+	return utils.HasPermission(permissions, permission)
+}
+
+// canAccessVersion checks if the user can access the given version code
+// Returns true if user has permission or version is in public list
+func canAccessVersion(c *gin.Context, versionCode string) bool {
+	hasPermission := checkPermission(c, PermissionBibleRead)
+	if hasPermission {
+		return true
+	}
+	return slices.Contains(publicVersionList, versionCode)
+}
+
+// validateVersionAccess validates if user can access a version, returns error if not
+func validateVersionAccess(c *gin.Context, versionCode string) error {
+	if !canAccessVersion(c, versionCode) {
+		return fmt.Errorf("forbidden: access denied for version %s", versionCode)
+	}
+	return nil
 }
 
 // getBookCode returns the standard 3-letter code for a book number
@@ -40,15 +86,22 @@ func getBookCode(bookNumber uint) string {
 	if code, ok := bookCodeMap[bookNumber]; ok {
 		return code
 	}
-	return "" // Return empty string if book number not found
+	return ""
 }
 
-// GetAllVersions Get all Bible versions
-func (s *Store) GetAllVersions() ([]VersionListItem, error) {
+// GetAllVersions returns all Bible versions, filtered by permission
+func (s *Store) GetAllVersions(c *gin.Context) ([]VersionListItem, error) {
+	hasPermission := checkPermission(c, PermissionBibleRead)
+
+	query := s.DB
+	if !hasPermission {
+		// If no permission, only return public versions
+		query = query.Where("code IN ?", publicVersionList)
+	}
+
 	var versions []Versions
-	err := s.DB.Find(&versions).Error
-	if err != nil {
-		return nil, err
+	if err := query.Find(&versions).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch versions: %w", err)
 	}
 
 	// Convert to API response format
@@ -66,7 +119,7 @@ func (s *Store) GetAllVersions() ([]VersionListItem, error) {
 
 // StreamBibleContent streams Bible content by version ID using channels
 // This method returns a channel that yields Bible books one by one for streaming
-func (s *Store) StreamBibleContent(ctx context.Context, versionID uint) (<-chan []byte, <-chan error) {
+func (s *Store) StreamBibleContent(c *gin.Context, ctx context.Context, versionID uint) (<-chan []byte, <-chan error) {
 	contentChan := make(chan []byte, 10) // Buffer for better performance
 	errorChan := make(chan error, 1)
 
@@ -77,6 +130,12 @@ func (s *Store) StreamBibleContent(ctx context.Context, versionID uint) (<-chan 
 		// Get version information first
 		var version Versions
 		if err := s.DB.WithContext(ctx).Where(&Versions{ID: versionID}).First(&version).Error; err != nil {
+			errorChan <- fmt.Errorf("failed to fetch version: %w", err)
+			return
+		}
+
+		// Validate version access
+		if err := validateVersionAccess(c, version.Code); err != nil {
 			errorChan <- err
 			return
 		}
@@ -101,7 +160,7 @@ func (s *Store) StreamBibleContent(ctx context.Context, versionID uint) (<-chan 
 		if err := s.DB.WithContext(ctx).Preload("Chapters.Verses").
 			Where(&Books{VersionID: version.ID}).
 			Order("number ASC").Find(&books).Error; err != nil {
-			errorChan <- err
+			errorChan <- fmt.Errorf("failed to fetch books: %w", err)
 			return
 		}
 
@@ -113,34 +172,7 @@ func (s *Store) StreamBibleContent(ctx context.Context, versionID uint) (<-chan 
 			default:
 			}
 
-			// Convert book to API format
-			chapters := make([]BibleContentChapter, len(book.Chapters))
-			for j, chapter := range book.Chapters {
-				verses := make([]BibleContentVerse, len(chapter.Verses))
-				for k, verse := range chapter.Verses {
-					verses[k] = BibleContentVerse{
-						ID:     verse.ID,
-						Number: verse.Number,
-						Text:   verse.Text,
-					}
-				}
-
-				chapters[j] = BibleContentChapter{
-					ID:     chapter.ID,
-					Number: chapter.Number,
-					Verses: verses,
-				}
-			}
-
-			bookData := BibleContentBook{
-				ID:           book.ID,
-				Number:       book.Number,
-				Name:         book.Name,
-				Abbreviation: book.Abbreviation,
-				Code:         getBookCode(book.Number),
-				Chapters:     chapters,
-			}
-
+			bookData := s.convertBookToAPIFormat(book)
 			bookBytes, err := json.Marshal(bookData)
 			if err != nil {
 				errorChan <- fmt.Errorf("failed to marshal book %d: %w", book.ID, err)
@@ -154,15 +186,43 @@ func (s *Store) StreamBibleContent(ctx context.Context, versionID uint) (<-chan 
 	return contentChan, errorChan
 }
 
+// convertBookToAPIFormat converts a Books model to BibleContentBook API format
+func (s *Store) convertBookToAPIFormat(book Books) BibleContentBook {
+	chapters := make([]BibleContentChapter, len(book.Chapters))
+	for j, chapter := range book.Chapters {
+		verses := make([]BibleContentVerse, len(chapter.Verses))
+		for k, verse := range chapter.Verses {
+			verses[k] = BibleContentVerse{
+				ID:     verse.ID,
+				Number: verse.Number,
+				Text:   verse.Text,
+			}
+		}
+
+		chapters[j] = BibleContentChapter{
+			ID:     chapter.ID,
+			Number: chapter.Number,
+			Verses: verses,
+		}
+	}
+
+	return BibleContentBook{
+		ID:           book.ID,
+		Number:       book.Number,
+		Name:         book.Name,
+		Abbreviation: book.Abbreviation,
+		Code:         getBookCode(book.Number),
+		Chapters:     chapters,
+	}
+}
+
 // SearchVerses performs hybrid search using pgvector and tsvector
 // Logic: Split into two queries (Vector + Keyword) and merge in backend using RRF
-// SearchVerses performs hybrid search using pgvector and tsvector
-// Logic: Split into two queries (Vector + Keyword) and merge in backend using RRF
-func (s *Store) SearchVerses(ctx context.Context, query string, embedding []float32, versionFilter string, limit int) ([]SearchResult, error) {
-	// Strategy to handle common words like "上帝":
-	// 1. Limit keyword search results to avoid too many matches
-	// 2. Add minimum score threshold for keyword search
-	// 3. Use combined scoring in merge for better ranking
+func (s *Store) SearchVerses(c *gin.Context, ctx context.Context, query string, embedding []float32, versionFilter string, limit int) ([]SearchResult, error) {
+	// Validate version access
+	if err := validateVersionAccess(c, versionFilter); err != nil {
+		return nil, err
+	}
 
 	// Calculate keyword search limit (use smaller limit to avoid too many results)
 	// For common single words, we want fewer but more relevant keyword results
@@ -173,8 +233,25 @@ func (s *Store) SearchVerses(ctx context.Context, query string, embedding []floa
 	}
 
 	// 1. Vector Search
-	var vectorResults []SearchResult
-	vectorSql := `
+	vectorResults, err := s.performVectorSearch(ctx, embedding, versionFilter, limit)
+	if err != nil {
+		return nil, fmt.Errorf("vector search failed: %w", err)
+	}
+
+	// 2. Keyword Search with minimum score threshold
+	keywordResults, err := s.performKeywordSearch(ctx, query, versionFilter, keywordLimit)
+	if err != nil {
+		return nil, fmt.Errorf("keyword search failed: %w", err)
+	}
+
+	// 3. Merge Results with intelligent scoring
+	return s.mergeResults(vectorResults, keywordResults, limit)
+}
+
+// performVectorSearch executes vector similarity search
+func (s *Store) performVectorSearch(ctx context.Context, embedding []float32, versionFilter string, limit int) ([]SearchResult, error) {
+	var results []SearchResult
+	vectorSQL := `
 		SELECT 
 			v.id::text as verse_id, 
 			v.text, 
@@ -191,16 +268,20 @@ func (s *Store) SearchVerses(ctx context.Context, query string, embedding []floa
 		WHERE ver.code = ?
 		ORDER BY bv.embedding <=> ? LIMIT ?
 	`
-	if err := s.DB.WithContext(ctx).Raw(vectorSql,
+
+	if err := s.DB.WithContext(ctx).Raw(vectorSQL,
 		pgvector.NewVector(embedding), versionFilter, pgvector.NewVector(embedding), limit,
-	).Scan(&vectorResults).Error; err != nil {
-		return nil, fmt.Errorf("vector search failed: %w", err)
+	).Scan(&results).Error; err != nil {
+		return nil, err
 	}
 
-	// 2. Keyword Search with minimum score threshold
-	// Use ts_rank_cd for better ranking and add minimum threshold
-	var keywordResults []SearchResult
-	keywordSql := `
+	return results, nil
+}
+
+// performKeywordSearch executes keyword-based full-text search
+func (s *Store) performKeywordSearch(ctx context.Context, query string, versionFilter string, limit int) ([]SearchResult, error) {
+	var results []SearchResult
+	keywordSQL := `
 		SELECT 
 			v.id::text as verse_id, 
 			v.text, 
@@ -218,40 +299,37 @@ func (s *Store) SearchVerses(ctx context.Context, query string, embedding []floa
 			AND ts_rank_cd(to_tsvector('simple', v.text), websearch_to_tsquery('simple', ?)) > 0.05
 		ORDER BY score DESC LIMIT ?
 	`
-	if err := s.DB.WithContext(ctx).Raw(keywordSql,
-		query, versionFilter, query, query, keywordLimit,
-	).Scan(&keywordResults).Error; err != nil {
-		return nil, fmt.Errorf("keyword search failed: %w", err)
+
+	if err := s.DB.WithContext(ctx).Raw(keywordSQL,
+		query, versionFilter, query, query, limit,
+	).Scan(&results).Error; err != nil {
+		return nil, err
 	}
 
-	// 3. Merge Results with intelligent scoring
-	return s.mergeResults(vectorResults, keywordResults, limit)
+	return results, nil
 }
 
-// mergeResults merges the vector and keyword results
+// mergeResults merges the vector and keyword results using RRF (Reciprocal Rank Fusion)
 // Strategy:
 // 1. Keyword results have priority and are placed first
 // 2. Remove duplicates from vector results (if already in keyword)
 // 3. For remaining results, use combined scoring to rank them intelligently
 func (s *Store) mergeResults(vector, keyword []SearchResult, limit int) ([]SearchResult, error) {
 	keywordVerseIDs := make(map[string]bool)
-	finalResults := make([]SearchResult, 0)
+	finalResults := make([]SearchResult, 0, limit)
 
 	// 1. Process keyword results first (they have priority)
 	for _, res := range keyword {
 		keywordVerseIDs[res.VerseID] = true
 		// Boost keyword scores slightly to ensure they stay on top
-		res.Score = res.Score * 1.2 // Boost keyword relevance
+		res.Score = res.Score * 1.2
 		finalResults = append(finalResults, res)
 	}
 
 	// 2. Process vector results, skip duplicates
-	// For non-duplicates, combine scores intelligently
 	vectorResults := make([]SearchResult, 0)
 	for _, res := range vector {
 		if !keywordVerseIDs[res.VerseID] {
-			// Normalize vector score (it's already between 0-1 from cosine distance)
-			// Keep original score for ranking
 			vectorResults = append(vectorResults, res)
 		}
 	}
