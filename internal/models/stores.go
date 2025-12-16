@@ -87,7 +87,7 @@ func (s *Store) GetAllVersions(c *gin.Context) ([]VersionListItem, error) {
 			ID:        version.ID,
 			Code:      version.Code,
 			Name:      version.Name,
-			UpdatedAt: version.UpdatedAt,
+			UpdatedAt: version.UpdatedAt.Unix(),
 		}
 	}
 
@@ -122,7 +122,7 @@ func (s *Store) StreamBibleContent(c *gin.Context, ctx context.Context, versionI
 			"version_id":   version.ID,
 			"version_code": version.Code,
 			"version_name": version.Name,
-			"updated_at":   version.UpdatedAt,
+			"updated_at":   version.UpdatedAt.Unix(),
 			"books":        []any{},
 		}
 

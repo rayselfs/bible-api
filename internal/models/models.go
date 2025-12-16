@@ -53,10 +53,10 @@ type BibleVectors struct {
 
 // VersionListItem is a version list item
 type VersionListItem struct {
-	ID        uint      `json:"id"`
-	Code      string    `json:"code"`
-	Name      string    `json:"name"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        uint   `json:"id"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	UpdatedAt int64  `json:"updated_at"`
 }
 
 // BibleContentAPI is the API response structure for getting complete Bible content
