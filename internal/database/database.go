@@ -44,6 +44,7 @@ func Migrate() {
 	m := gormigrate.New(DB, gormigrate.DefaultOptions, []*gormigrate.Migration{
 		migrations.InitialSchema,
 		migrations.AddHybridSearch,
+		migrations.AddUpdatedAtToVersions,
 	})
 
 	if err := m.Migrate(); err != nil {

@@ -1,13 +1,18 @@
 package models
 
-import "github.com/pgvector/pgvector-go"
+import (
+	"time"
+
+	"github.com/pgvector/pgvector-go"
+)
 
 // Versions corresponds to versions table, stores Bible version information
 type Versions struct {
-	ID    uint    `gorm:"primaryKey" json:"id"`
-	Code  string  `gorm:"uniqueIndex;not null;size:20" json:"code"`
-	Name  string  `gorm:"not null;size:100" json:"name"`
-	Books []Books `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE"`
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Code      string    `gorm:"uniqueIndex;not null;size:20" json:"code"`
+	Name      string    `gorm:"not null;size:100" json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Books     []Books   `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE"`
 }
 
 // Books corresponds to books table, stores Bible book information
@@ -48,9 +53,10 @@ type BibleVectors struct {
 
 // VersionListItem is a version list item
 type VersionListItem struct {
-	ID   uint   `json:"id"`
-	Code string `json:"code"`
-	Name string `json:"name"`
+	ID        uint      `json:"id"`
+	Code      string    `json:"code"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // BibleContentAPI is the API response structure for getting complete Bible content

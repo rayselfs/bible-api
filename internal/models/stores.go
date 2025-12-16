@@ -84,9 +84,10 @@ func (s *Store) GetAllVersions(c *gin.Context) ([]VersionListItem, error) {
 	versionList := make([]VersionListItem, len(versions))
 	for i, version := range versions {
 		versionList[i] = VersionListItem{
-			ID:   version.ID,
-			Code: version.Code,
-			Name: version.Name,
+			ID:        version.ID,
+			Code:      version.Code,
+			Name:      version.Name,
+			UpdatedAt: version.UpdatedAt,
 		}
 	}
 
@@ -121,6 +122,7 @@ func (s *Store) StreamBibleContent(c *gin.Context, ctx context.Context, versionI
 			"version_id":   version.ID,
 			"version_code": version.Code,
 			"version_name": version.Name,
+			"updated_at":   version.UpdatedAt,
 			"books":        []any{},
 		}
 
@@ -323,4 +325,61 @@ func (s *Store) mergeResults(vector, keyword []SearchResult, limit int) ([]Searc
 	}
 
 	return finalResults, nil
+}
+
+// UpdateVerse updates a verse text and its embedding, and updates the parent version's UpdatedAt
+func (s *Store) UpdateVerse(c *gin.Context, ctx context.Context, verseID uint, text string, embedding []float32) error {
+	// Begin transaction
+	tx := s.DB.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1. Update Verse Text
+	if err := tx.Model(&Verses{}).Where("id = ?", verseID).Update("text", text).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to update verse text: %w", err)
+	}
+
+	// 2. Update Vector Embedding
+	if err := tx.Model(&BibleVectors{}).Where("verse_id = ?", verseID).
+		Update("embedding", pgvector.NewVector(embedding)).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to update vector embedding: %w", err)
+	}
+
+	// 3. Find Version ID from Verse -> Chapter -> Book -> Version
+	var result struct {
+		VersionID uint
+	}
+	query := `
+		SELECT b.version_id 
+		FROM verses v
+		JOIN chapters c ON v.chapter_id = c.id
+		JOIN books b ON c.book_id = b.id
+		WHERE v.id = ?
+	`
+	if err := tx.Raw(query, verseID).Scan(&result).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to find version for verse %d: %w", verseID, err)
+	}
+
+	// 4. Update Version UpdatedAt
+	if err := tx.Model(&Versions{}).Where("id = ?", result.VersionID).
+		Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP")).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to update version timestamp: %w", err)
+	}
+
+	// Commit
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }

@@ -353,6 +353,13 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 		}
 	}
 
+	// Update Version UpdatedAt before commit
+	if err := tx.Model(&models.Versions{}).Where("id = ?", version.ID).
+		Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP")).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to update version timestamp: %v", err)
+	}
+
 	// Commit transaction
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit transaction: %v", err)
@@ -588,6 +595,13 @@ func importSingleChapter(db *gorm.DB, openAIService *openai.OpenAIService, data 
 		fmt.Printf("\r  Completed: %d verses (%d new, %d updated), %d vectors\n", importedVerses+updatedVerses, importedVerses, updatedVerses, importedVectors)
 	} else {
 		fmt.Printf("\r  Completed: %d verses, %d vectors\n", importedVerses, importedVectors)
+	}
+
+	// Update Version UpdatedAt before commit
+	if err := tx.Model(&models.Versions{}).Where("id = ?", version.ID).
+		Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP")).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to update version timestamp: %v", err)
 	}
 
 	// Commit transaction

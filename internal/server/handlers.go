@@ -199,3 +199,61 @@ func (a *API) HandleSearch(c *gin.Context) {
 
 	c.JSON(http.StatusOK, results)
 }
+
+// UpdateVerseRequest represents the request body for updating a verse
+type UpdateVerseRequest struct {
+	Text string `json:"text" binding:"required"`
+}
+
+// HandleUpdateVerse updates a verse's text and embedding
+// @Summary      Update verse content
+// @Description  Update verse text and regenerate embedding
+// @Tags         Bible
+// @Accept       json
+// @Produce      json
+// @Param        id   path      int  true  "Verse ID"
+// @Param        body body      UpdateVerseRequest true "Update Request"
+// @Success      200  {object}  map[string]interface{} "Success"
+// @Failure      400  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Router       /priv/bible/v1/verse/{id} [post]
+func (a *API) HandleUpdateVerse(c *gin.Context) {
+	verseIDStr := c.Param("id")
+	verseID, err := strconv.Atoi(verseIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid verse ID"})
+		return
+	}
+
+	var req UpdateVerseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid request body: " + err.Error()})
+		return
+	}
+
+	// Generate new embedding
+	ctx := c.Request.Context()
+	embedding64, err := a.openAIService.GetEmbedding(ctx, req.Text)
+	if err != nil {
+		logger.GetAppLogger().Errorf("Failed to get embedding for updated verse: %v", err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to generate embedding"})
+		return
+	}
+
+	embedding32 := make([]float32, len(embedding64))
+	for i, v := range embedding64 {
+		embedding32[i] = float32(v)
+	}
+
+	// Update verse in store
+	if err := a.store.UpdateVerse(c, ctx, uint(verseID), req.Text, embedding32); err != nil {
+		logger.GetAppLogger().Errorf("Failed to update verse %d: %v", verseID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to update verse"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Verse updated successfully",
+		"id":      verseID,
+	})
+}

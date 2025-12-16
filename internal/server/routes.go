@@ -22,4 +22,10 @@ func (a *API) SetupRoutes(r *gin.Engine) {
 		v1.GET("/version/:version_id", a.HandleGetVersionContent)
 		v1.GET("/search", a.HandleSearch)
 	}
+
+	privV1 := r.Group("/priv/bible/v1")
+	privV1.Use(middleware.AuthMiddleware())
+	{
+		privV1.POST("/verse/:id", a.HandleUpdateVerse)
+	}
 }
