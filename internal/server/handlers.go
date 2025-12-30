@@ -57,7 +57,7 @@ func (a *API) HandleGetAllVersions(c *gin.Context) {
 // @Success      200        {string}  string "Successfully streaming Bible content"
 // @Failure      400        {object}  ErrorResponse "Invalid input parameters"
 // @Failure      500        {object}  ErrorResponse "Internal server error"
-// @Router       /api/bible/v1/version/{version_id} [get]
+// @Router       /api/bible/v1/content/{version_id} [get]
 func (a *API) HandleGetVersionContent(c *gin.Context) {
 	appLogger := logger.GetAppLogger()
 
