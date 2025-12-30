@@ -9,6 +9,7 @@ import (
 
 	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
+	"hhc/bible-api/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -204,13 +205,6 @@ func (a *API) HandleGetVectors(c *gin.Context) {
 	}
 }
 
-// HandleSearch 執行混合搜尋 (Legacy: Deprecation Warning)
-// @Summary      Search Bible verses
-// @Router       /api/bible/v1/search [get]
-func (a *API) HandleSearch(c *gin.Context) {
-	c.JSON(http.StatusGone, ErrorResponse{Error: "This endpoint is deprecated. Use client-side search."})
-}
-
 // UpdateVerseRequest represents the request body for updating a verse
 type UpdateVerseRequest struct {
 	Text string `json:"text" binding:"required"`
@@ -227,12 +221,30 @@ type UpdateVerseRequest struct {
 // @Success      200  {object}  map[string]interface{} "Success"
 // @Failure      400  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
-// @Router       /priv/bible/v1/verse/{id} [post]
+// @Router       /api/bible/v1/verse/{id} [post]
 func (a *API) HandleUpdateVerse(c *gin.Context) {
 	verseIDStr := c.Param("id")
 	verseID, err := strconv.Atoi(verseIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid verse ID"})
+		return
+	}
+
+	// Check permissions
+	permissionsStr, exists := c.Get("permissions")
+	if !exists {
+		c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied: missing permissions"})
+		return
+	}
+
+	permissions, ok := permissionsStr.(string)
+	if !ok {
+		c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied: invalid permissions format"})
+		return
+	}
+
+	if !utils.HasPermission(permissions, "bible:edit") && !utils.HasPermission(permissions, "bible:admin") {
+		c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied: requires 'bible:edit' or 'bible:admin' permission"})
 		return
 	}
 

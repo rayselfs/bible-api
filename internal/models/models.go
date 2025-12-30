@@ -89,14 +89,3 @@ type BibleContentVerse struct {
 	Number int    `json:"number"`
 	Text   string `json:"text"`
 }
-
-// SearchResult represents a single search result
-type SearchResult struct {
-	Score         float64 `json:"score"`
-	VerseID       string  `json:"verse_id"`
-	VersionCode   string  `json:"version_code"`
-	BookNumber    uint    `json:"book_number"`
-	ChapterNumber uint    `json:"chapter_number"`
-	VerseNumber   uint    `json:"verse_number"`
-	Text          string  `json:"text"`
-}

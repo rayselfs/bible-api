@@ -8,7 +8,6 @@ import (
 	"hhc/bible-api/internal/utils"
 	"math"
 	"slices"
-	"sort"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pgvector/pgvector-go"
@@ -105,6 +104,19 @@ func (s *Store) StreamVectorsForVersion(c *gin.Context, ctx context.Context, ver
 	go func() {
 		defer close(contentChan)
 		defer close(errorChan)
+
+		// 0. Fetch Version to check permissions
+		var version Versions
+		if err := s.DB.First(&version, versionID).Error; err != nil {
+			errorChan <- fmt.Errorf("version not found: %w", err)
+			return
+		}
+
+		// Validate version access
+		if err := validateVersionAccess(c, version.Code); err != nil {
+			errorChan <- err
+			return
+		}
 
 		// 1. Get IDs of books belonging to this version
 		var bookIDs []uint
@@ -296,139 +308,11 @@ func (s *Store) convertBookToAPIFormat(book Books) BibleContentBook {
 	}
 }
 
-// SearchVerses performs hybrid search using pgvector and tsvector
-// Logic: Split into two queries (Vector + Keyword) and merge in backend using RRF
-func (s *Store) SearchVerses(c *gin.Context, ctx context.Context, query string, embedding []float32, versionFilter string, limit int) ([]SearchResult, error) {
-	// Validate version access
-	if err := validateVersionAccess(c, versionFilter); err != nil {
-		return nil, err
-	}
-
-	// Calculate keyword search limit (use smaller limit to avoid too many results)
-	// For common single words, we want fewer but more relevant keyword results
-	keywordLimit := limit
-	if len(query) <= 3 {
-		// For very short queries (likely common words), use smaller limit
-		keywordLimit = max(limit/2, 5)
-	}
-
-	// 1. Vector Search
-	vectorResults, err := s.performVectorSearch(ctx, embedding, versionFilter, limit)
-	if err != nil {
-		return nil, fmt.Errorf("vector search failed: %w", err)
-	}
-
-	// 2. Keyword Search with minimum score threshold
-	keywordResults, err := s.performKeywordSearch(ctx, query, versionFilter, keywordLimit)
-	if err != nil {
-		return nil, fmt.Errorf("keyword search failed: %w", err)
-	}
-
-	// 3. Merge Results with intelligent scoring
-	return s.mergeResults(vectorResults, keywordResults, limit)
-}
-
-// performVectorSearch executes vector similarity search
-func (s *Store) performVectorSearch(ctx context.Context, embedding []float32, versionFilter string, limit int) ([]SearchResult, error) {
-	var results []SearchResult
-	vectorSQL := `
-		SELECT 
-			v.id::text as verse_id, 
-			v.text, 
-			v.number as verse_number,
-			c.number as chapter_number,
-			b.number as book_number,
-			ver.code as version_code,
-			1 - (bv.embedding <=> ?) as score
-		FROM verses v
-		JOIN bible_vectors bv ON v.id = bv.verse_id
-		JOIN chapters c ON v.chapter_id = c.id
-		JOIN books b ON c.book_id = b.id
-		JOIN versions ver ON b.version_id = ver.id
-		WHERE ver.code = ?
-		ORDER BY bv.embedding <=> ? LIMIT ?
-	`
-
-	if err := s.DB.WithContext(ctx).Raw(vectorSQL,
-		pgvector.NewVector(embedding), versionFilter, pgvector.NewVector(embedding), limit,
-	).Scan(&results).Error; err != nil {
-		return nil, err
-	}
-
-	return results, nil
-}
-
-// performKeywordSearch executes keyword-based full-text search
-func (s *Store) performKeywordSearch(ctx context.Context, query string, versionFilter string, limit int) ([]SearchResult, error) {
-	var results []SearchResult
-	keywordSQL := `
-		SELECT 
-			v.id::text as verse_id, 
-			v.text, 
-			v.number as verse_number,
-			c.number as chapter_number,
-			b.number as book_number,
-			ver.code as version_code,
-			ts_rank_cd(to_tsvector('simple', v.text), websearch_to_tsquery('simple', ?)) as score
-		FROM verses v
-		JOIN chapters c ON v.chapter_id = c.id
-		JOIN books b ON c.book_id = b.id
-		JOIN versions ver ON b.version_id = ver.id
-		WHERE ver.code = ? 
-			AND to_tsvector('simple', v.text) @@ websearch_to_tsquery('simple', ?)
-			AND ts_rank_cd(to_tsvector('simple', v.text), websearch_to_tsquery('simple', ?)) > 0.05
-		ORDER BY score DESC LIMIT ?
-	`
-
-	if err := s.DB.WithContext(ctx).Raw(keywordSQL,
-		query, versionFilter, query, query, limit,
-	).Scan(&results).Error; err != nil {
-		return nil, err
-	}
-
-	return results, nil
-}
-
 // mergeResults merges the vector and keyword results using RRF (Reciprocal Rank Fusion)
 // Strategy:
 // 1. Keyword results have priority and are placed first
 // 2. Remove duplicates from vector results (if already in keyword)
 // 3. For remaining results, use combined scoring to rank them intelligently
-func (s *Store) mergeResults(vector, keyword []SearchResult, limit int) ([]SearchResult, error) {
-	keywordVerseIDs := make(map[string]bool)
-	finalResults := make([]SearchResult, 0, limit)
-
-	// 1. Process keyword results first (they have priority)
-	for _, res := range keyword {
-		keywordVerseIDs[res.VerseID] = true
-		// Boost keyword scores slightly to ensure they stay on top
-		res.Score = res.Score * 1.2
-		finalResults = append(finalResults, res)
-	}
-
-	// 2. Process vector results, skip duplicates
-	vectorResults := make([]SearchResult, 0)
-	for _, res := range vector {
-		if !keywordVerseIDs[res.VerseID] {
-			vectorResults = append(vectorResults, res)
-		}
-	}
-
-	// 3. Sort vector results by score (they're already sorted, but ensure it)
-	sort.Slice(vectorResults, func(i, j int) bool {
-		return vectorResults[i].Score > vectorResults[j].Score
-	})
-
-	// 4. Add vector results after keyword results
-	finalResults = append(finalResults, vectorResults...)
-
-	// 5. Apply limit
-	if len(finalResults) > limit {
-		finalResults = finalResults[:limit]
-	}
-
-	return finalResults, nil
-}
 
 // UpdateVerse updates a verse text and its embedding, and updates the parent version's UpdatedAt
 func (s *Store) UpdateVerse(c *gin.Context, ctx context.Context, verseID uint, text string, embedding []float32) error {
