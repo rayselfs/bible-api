@@ -321,6 +321,17 @@ func importBibleData(db *gorm.DB, data *JSONBibleData) error {
 		return fmt.Errorf("failed to update version timestamp: %v", err)
 	}
 
+	// Create Vector Update Log
+	vectorLog := models.VectorUpdateLog{
+		Source:      "import_full",
+		ReferenceID: version.Code,
+		Status:      "pending",
+	}
+	if err := tx.Create(&vectorLog).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to create vector update log: %v", err)
+	}
+
 	// Commit transaction
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit transaction: %v", err)
@@ -526,6 +537,17 @@ func importSingleChapter(db *gorm.DB, data *JSONBibleData, bookNum uint, chapter
 		Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP")).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to update version timestamp: %v", err)
+	}
+
+	// Create Vector Update Log
+	vectorLog := models.VectorUpdateLog{
+		Source:      "import_chapter",
+		ReferenceID: fmt.Sprintf("%s_%d_%d", version.Code, book.Number, chapter.Number),
+		Status:      "pending",
+	}
+	if err := tx.Create(&vectorLog).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to create vector update log: %v", err)
 	}
 
 	// Commit transaction

@@ -89,3 +89,13 @@ type BibleContentVerse struct {
 	Number int    `json:"number"`
 	Text   string `json:"text"`
 }
+
+// VectorUpdateLog tracks pending vector updates
+type VectorUpdateLog struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Source      string    `gorm:"not null;size:50" json:"source"`
+	ReferenceID string    `gorm:"size:100" json:"reference_id"`
+	Status      string    `gorm:"not null;size:20;default:'pending';index" json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}

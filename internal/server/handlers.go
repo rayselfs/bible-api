@@ -261,15 +261,26 @@ func (a *API) HandleUpdateVerse(c *gin.Context) {
 	}
 
 	// Signal version update
-	// We need version ID.
 	var result struct{ VersionID uint }
 	a.store.DB.Raw("SELECT b.version_id FROM verses v JOIN chapters c ON v.chapter_id = c.id JOIN books b ON c.book_id = b.id WHERE v.id = ?", verseID).Scan(&result)
 	if result.VersionID > 0 {
 		a.store.DB.Model(&models.Versions{}).Where("id = ?", result.VersionID).Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP"))
 	}
 
+	// Async Vector Generation Log
+	// Log the need for vector update
+	vectorLog := models.VectorUpdateLog{
+		Source:      "api_update_verse",
+		ReferenceID: verseIDStr,
+		Status:      "pending",
+	}
+	if err := a.store.DB.Create(&vectorLog).Error; err != nil {
+		// Just log error, don't fail the request as verse text is updated
+		logger.GetAppLogger().Errorf("Failed to create vector update log for verse %d: %v", verseID, err)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Verse updated successfully (Text only, Vector stale)",
+		"message": "Verse updated successfully",
 		"id":      verseID,
 	})
 }

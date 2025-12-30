@@ -46,6 +46,7 @@ func Migrate() {
 		migrations.AddHybridSearch,
 		migrations.AddUpdatedAtToVersions,
 		migrations.ChangeVectorDimension,
+		migrations.AddVectorUpdateLogs,
 	})
 
 	if err := m.Migrate(); err != nil {

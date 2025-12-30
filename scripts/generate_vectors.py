@@ -36,15 +36,20 @@ def migrate_vectors():
     cur = conn.cursor()
 
     try:
-        # 1. Fetch all verses
+        # 1. Truncate existing vectors
+        print("Truncating 'bible_vectors' table...")
+        cur.execute("TRUNCATE TABLE bible_vectors RESTART IDENTITY")
+        conn.commit()
+
+        # 2. Fetch all verses
         print("Fetching all verses...")
-        cur.execute("SELECT id, text_content FROM verses ORDER BY id")
+        cur.execute("SELECT id, text FROM verses ORDER BY id")
         verses = cur.fetchall()
         
         total_verses = len(verses)
         print(f"Found {total_verses} verses. Starting processing...")
 
-        # 2. Process in batches
+        # 3. Process in batches
         updated_count = 0
         
         for i in range(0, total_verses, BATCH_SIZE):
@@ -55,21 +60,19 @@ def migrate_vectors():
             # Generate embeddings
             embeddings = model.encode(texts)
             
-            # Prepare update data
-            update_data = []
+            # Prepare data
+            insert_data = []
             for j, embedding in enumerate(embeddings):
                 # Format as vector string for pgvector: '[0.1,0.2,...]'
                 vector_str = str(embedding.tolist())
-                update_data.append((vector_str, ids[j]))
+                # (verse_id, embedding)
+                insert_data.append((ids[j], vector_str))
             
-            # Bulk update
-            # Note: We assume the column is named 'embedding'. 
-            # If migrating, we might want to ensure the column type is correct first (vector(384)).
-            # This script assumes the DB schema has already been altered to vector(384).
+            # Bulk Insert
             execute_values(
                 cur,
-                "UPDATE verses SET embedding = data.v::vector FROM (VALUES %s) AS data(v, i) WHERE verses.id = data.i",
-                update_data,
+                "INSERT INTO bible_vectors (verse_id, embedding) VALUES %s",
+                insert_data,
                 template=None,
                 page_size=100
             )
@@ -89,6 +92,8 @@ def migrate_vectors():
         conn.close()
 
 if __name__ == "__main__":
+    import argparse
+    
     # Check for library availability
     try:
         import sentence_transformers
@@ -98,10 +103,47 @@ if __name__ == "__main__":
         print("pip install sentence-transformers psycopg2-binary")
         sys.exit(1)
 
-    print("WARNING: This script will overwrite vectors in the 'verses' table.")
-    print("Ensure you have altered the column type to vector(384) BEFORE running.")
-    confirm = input("Type 'yes' to proceed: ")
-    if confirm.lower() == 'yes':
-        migrate_vectors()
-    else:
-        print("Aborted.")
+    parser = argparse.ArgumentParser(description='Generate Bible Vectors')
+    parser.add_argument('--force', action='store_true', help='Force regeneration regardless of pending logs')
+    parser.add_argument('--check', action='store_true', help='Check for pending logs and run if needed (Default behavior)')
+    args = parser.parse_args()
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        should_run = False
+        
+        if args.force:
+            print("Force mode enabled. Starting regeneration...")
+            should_run = True
+        else:
+            # Check for pending logs
+            cur.execute("SELECT COUNT(*) FROM vector_update_logs WHERE status = 'pending'")
+            count = cur.fetchone()[0]
+            if count > 0:
+                print(f"Found {count} pending vector update logs. Starting regeneration...")
+                should_run = True
+                
+                # Update status to processing
+                cur.execute("UPDATE vector_update_logs SET status = 'processing', updated_at = NOW() WHERE status = 'pending'")
+                conn.commit()
+            else:
+                print("No pending vector updates found.")
+        
+        if should_run:
+            migrate_vectors()
+            
+            # If we ran based on logs (or even force), we should mark processing logs as completed
+            # (If force ran, maybe we also want to clear pending logs? Yes, assume so)
+            cur.execute("UPDATE vector_update_logs SET status = 'completed', updated_at = NOW() WHERE status IN ('pending', 'processing')")
+            conn.commit()
+            print("Updated log status to 'completed'.")
+
+    except Exception as e:
+        print(f"Error during execution: {e}")
+        # If possible, mark logs as failed? Or leave as processing/pending?
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
