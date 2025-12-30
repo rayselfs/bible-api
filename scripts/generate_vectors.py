@@ -11,6 +11,7 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
 DB_NAME = os.getenv("DB_NAME", "bible_db")
+DB_SSLMODE = os.getenv("DB_SSLMODE", "disable")
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 BATCH_SIZE = 100
 
@@ -21,7 +22,8 @@ def get_db_connection():
             port=DB_PORT,
             user=DB_USER,
             password=DB_PASSWORD,
-            dbname=DB_NAME
+            dbname=DB_NAME,
+            sslmode=DB_SSLMODE
         )
         return conn
     except Exception as e:
