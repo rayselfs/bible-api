@@ -1,18 +1,14 @@
 package importer
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"hhc/bible-api/internal/models"
-	"hhc/bible-api/internal/pkg/openai"
 
-	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
 )
 
@@ -45,7 +41,10 @@ type JSONVerse struct {
 // Run executes the Bible data import
 // If bookNum and chapterNum are both 0, imports the entire file
 // Otherwise, imports only the specified book and chapter
-func Run(db *gorm.DB, openAIService *openai.OpenAIService, filePath string, bookNum uint, chapterNum uint) error {
+// Run executes the Bible data import
+// If bookNum and chapterNum are both 0, imports the entire file
+// Otherwise, imports only the specified book and chapter
+func Run(db *gorm.DB, filePath string, bookNum uint, chapterNum uint) error {
 	// Check if file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return fmt.Errorf("file not found: %s", filePath)
@@ -70,13 +69,13 @@ func Run(db *gorm.DB, openAIService *openai.OpenAIService, filePath string, book
 	// If bookNum and chapterNum are specified, import only that chapter
 	if bookNum > 0 && chapterNum > 0 {
 		fmt.Printf("Importing book %d, chapter %d only\n", bookNum, chapterNum)
-		if err := importSingleChapter(db, openAIService, &bibleData, bookNum, chapterNum); err != nil {
+		if err := importSingleChapter(db, &bibleData, bookNum, chapterNum); err != nil {
 			return fmt.Errorf("import failed: %v", err)
 		}
 	} else {
 		fmt.Printf("Books: %d\n", len(bibleData.Books))
 		// Start full import
-		if err := importBibleData(db, openAIService, &bibleData); err != nil {
+		if err := importBibleData(db, &bibleData); err != nil {
 			return fmt.Errorf("import failed: %v", err)
 		}
 	}
@@ -86,7 +85,7 @@ func Run(db *gorm.DB, openAIService *openai.OpenAIService, filePath string, book
 }
 
 // ImportAllFromDataDir scans the specified directory and imports all JSON files
-func ImportAllFromDataDir(db *gorm.DB, openAIService *openai.OpenAIService, dataDir string) error {
+func ImportAllFromDataDir(db *gorm.DB, dataDir string) error {
 	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
 		return fmt.Errorf("data directory not found: %s", dataDir)
 	}
@@ -122,7 +121,7 @@ func ImportAllFromDataDir(db *gorm.DB, openAIService *openai.OpenAIService, data
 		fmt.Printf("%s\n", strings.Repeat("=", 60))
 		fmt.Println()
 
-		if err := Run(db, openAIService, filePath, 0, 0); err != nil {
+		if err := Run(db, filePath, 0, 0); err != nil {
 			fmt.Printf("\n❌ Failed to import %s: %v\n\n", filePath, err)
 			continue
 		}
@@ -134,7 +133,7 @@ func ImportAllFromDataDir(db *gorm.DB, openAIService *openai.OpenAIService, data
 	return nil
 }
 
-func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSONBibleData) error {
+func importBibleData(db *gorm.DB, data *JSONBibleData) error {
 	// Begin transaction
 	tx := db.Begin()
 	if tx.Error != nil {
@@ -181,7 +180,7 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 	totalUpdatedVerses := 0
 	totalVectors := 0
 
-	ctx := context.Background()
+	// ctx := context.Background()
 
 	for i, bookData := range data.Books {
 		fmt.Printf("\nImporting book %d/%d: %s\n", i+1, totalBooks, bookData.Name)
@@ -290,60 +289,22 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 				}
 				bookVerseCount++
 
-				// 5. Generate and store embedding
-				embedding64, err := openAIService.GetEmbedding(ctx, verseData.Text)
-				if err != nil {
-					fmt.Printf("\n  [ERROR] Failed to get embedding for %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
-					// Continue without embedding, don't fail the entire import
-					continue
-				}
+				// Vector generation skipped in favor of offline Python script
 
-				// Convert []float64 to []float32 for pgvector
-				embedding32 := make([]float32, len(embedding64))
-				for j, v := range embedding64 {
-					embedding32[j] = float32(v)
-				}
-
-				// Check if vector already exists
-				var existingVector models.BibleVectors
-				if err := tx.Where("verse_id = ?", verse.ID).First(&existingVector).Error; err != nil {
-					if err == gorm.ErrRecordNotFound {
-						// Create new vector
-						bibleVector := models.BibleVectors{
-							VerseID:   verse.ID,
-							Embedding: pgvector.NewVector(embedding32),
-						}
-						if err := tx.Create(&bibleVector).Error; err != nil {
-							fmt.Printf("\n  [ERROR] Failed to store embedding for %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
-							continue
-						}
-					} else {
-						fmt.Printf("\n  [ERROR] Failed to check existing vector for %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
-						continue
-					}
-				} else {
-					// Update existing vector
-					existingVector.Embedding = pgvector.NewVector(embedding32)
-					if err := tx.Save(&existingVector).Error; err != nil {
-						fmt.Printf("\n  [ERROR] Failed to update embedding for %s %d:%d: %v", bookData.Name, chapterData.Number, verseData.Number, err)
-						continue
-					}
-				}
-
-				totalVectors++
-				bookVectorCount++
+				totalVectors += 0 // kept variable for stats consistency
+				bookVectorCount += 0
 
 				// Progress indicator every 10 verses
 				if bookVerseCount%10 == 0 {
 					if bookUpdatedCount > 0 {
-						fmt.Printf("\r  Progress: %d verses (%d new, %d updated), %d vectors", bookVerseCount, bookVerseCount-bookUpdatedCount, bookUpdatedCount, bookVectorCount)
+						fmt.Printf("\r  Progress: %d verses (%d new, %d updated)", bookVerseCount, bookVerseCount-bookUpdatedCount, bookUpdatedCount)
 					} else {
-						fmt.Printf("\r  Progress: %d verses, %d vectors", bookVerseCount, bookVectorCount)
+						fmt.Printf("\r  Progress: %d verses", bookVerseCount)
 					}
 				}
 
 				// Rate limiting: avoid hitting API rate limits
-				time.Sleep(20 * time.Millisecond)
+				// time.Sleep(20 * time.Millisecond)
 			}
 		}
 		if bookUpdatedCount > 0 {
@@ -380,7 +341,7 @@ func importBibleData(db *gorm.DB, openAIService *openai.OpenAIService, data *JSO
 }
 
 // importSingleChapter imports a single chapter from the Bible data
-func importSingleChapter(db *gorm.DB, openAIService *openai.OpenAIService, data *JSONBibleData, bookNum uint, chapterNum uint) error {
+func importSingleChapter(db *gorm.DB, data *JSONBibleData, bookNum uint, chapterNum uint) error {
 	// Find the book and chapter in the JSON data
 	var targetBook *JSONBook
 	var targetChapter *JSONChapter
@@ -495,7 +456,7 @@ func importSingleChapter(db *gorm.DB, openAIService *openai.OpenAIService, data 
 	}
 
 	// 4. Import verses with embeddings (using update strategy)
-	ctx := context.Background()
+	// ctx := context.Background()
 	importedVerses := 0
 	importedVectors := 0
 	updatedVerses := 0
@@ -536,59 +497,22 @@ func importSingleChapter(db *gorm.DB, openAIService *openai.OpenAIService, data 
 			importedVerses++
 		}
 
-		// Generate and store embedding
-		embedding64, err := openAIService.GetEmbedding(ctx, verseData.Text)
-		if err != nil {
-			fmt.Printf("\n  [ERROR] Failed to get embedding for %s %d:%d: %v\n", book.Name, chapter.Number, verseData.Number, err)
-			continue
-		}
+		// Vector generation skipped
 
-		// Convert []float64 to []float32 for pgvector
-		embedding32 := make([]float32, len(embedding64))
-		for j, v := range embedding64 {
-			embedding32[j] = float32(v)
-		}
-
-		// Check if vector already exists
-		var existingVector models.BibleVectors
-		if err := tx.Where("verse_id = ?", verse.ID).First(&existingVector).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				// Create new vector
-				bibleVector := models.BibleVectors{
-					VerseID:   verse.ID,
-					Embedding: pgvector.NewVector(embedding32),
-				}
-				if err := tx.Create(&bibleVector).Error; err != nil {
-					fmt.Printf("\n  [ERROR] Failed to store embedding for %s %d:%d: %v\n", book.Name, chapter.Number, verseData.Number, err)
-					continue
-				}
-			} else {
-				fmt.Printf("\n  [ERROR] Failed to check existing vector for %s %d:%d: %v\n", book.Name, chapter.Number, verseData.Number, err)
-				continue
-			}
-		} else {
-			// Update existing vector
-			existingVector.Embedding = pgvector.NewVector(embedding32)
-			if err := tx.Save(&existingVector).Error; err != nil {
-				fmt.Printf("\n  [ERROR] Failed to update embedding for %s %d:%d: %v\n", book.Name, chapter.Number, verseData.Number, err)
-				continue
-			}
-		}
-
-		importedVectors++
+		importedVectors += 0
 
 		// Progress indicator every 10 verses
 		totalProcessed := importedVerses + updatedVerses
 		if totalProcessed%10 == 0 {
 			if updatedVerses > 0 {
-				fmt.Printf("\r  Progress: %d/%d verses (%d new, %d updated), %d vectors", totalProcessed, len(targetChapter.Verses), importedVerses, updatedVerses, importedVectors)
+				fmt.Printf("\r  Progress: %d/%d verses (%d new, %d updated)", totalProcessed, len(targetChapter.Verses), importedVerses, updatedVerses)
 			} else {
-				fmt.Printf("\r  Progress: %d/%d verses, %d vectors", totalProcessed, len(targetChapter.Verses), importedVectors)
+				fmt.Printf("\r  Progress: %d/%d verses", totalProcessed, len(targetChapter.Verses))
 			}
 		}
 
 		// Rate limiting
-		time.Sleep(20 * time.Millisecond)
+		// time.Sleep(20 * time.Millisecond)
 	}
 
 	if updatedVerses > 0 {

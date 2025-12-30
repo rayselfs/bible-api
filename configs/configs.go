@@ -12,11 +12,6 @@ type Env struct {
 	PostgresDB      string `env:"POSTGRES_DB" envDefault:"bible"`
 	PostgresSSLMode string `env:"POSTGRES_SSLMODE" envDefault:"disable"` // disable, require
 	ServerPort      string `env:"SERVER_PORT" envDefault:"9999"`
-
-	// Azure OpenAI configuration for search query embedding
-	AzureOpenAIBaseURL   string `env:"AZURE_OPENAI_BASE_URL"`
-	AzureOpenAIKey       string `env:"AZURE_OPENAI_KEY"`
-	AzureOpenAIModelName string `env:"AZURE_OPENAI_MODEL_NAME"`
 }
 
 func InitConfig() (*Env, error) {

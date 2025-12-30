@@ -1,16 +1,17 @@
 trigger:
   tags:
     include:
-      - '*'
+      - "*"
 
 pool:
-  vmImage: 'ubuntu-latest'
+  vmImage: "ubuntu-latest"
 
 variables:
-  registry: 'alive.azurecr.io'
-  repository: 'alive/bible-api'
-  containerAppName: 'bible-api'
-  resourceGroup: 'alive'
+  registry: "alive.azurecr.io"
+  repository: "alive/bible-api"
+  scriptRepository: "alive/bible-script"
+  containerAppName: "bible-api"
+  resourceGroup: "alive"
 
 steps:
   - checkout: self
@@ -19,7 +20,7 @@ steps:
   - script: |
       # Get the latest tag from git repository
       LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-      
+
       if [ -z "$LATEST_TAG" ]; then
         echo "No tags found, using commit SHA as image tag"
         IMAGE_TAG="$(git rev-parse --short HEAD)"
@@ -27,24 +28,45 @@ steps:
         echo "Latest Git Tag: $LATEST_TAG"
         IMAGE_TAG="$LATEST_TAG"
       fi
-      
+
       echo "Image Tag: $IMAGE_TAG"
       echo "##vso[task.setvariable variable=IMAGE_TAG]$IMAGE_TAG"
-    displayName: 'Get Latest Git Tag'
-  
+    displayName: "Get Latest Git Tag"
+
+  # Build Main API
   - task: Docker@2
-    displayName: 'Build Docker Image'
+    displayName: "Build API Docker Image"
     inputs:
-      command: 'build'
-      repository: '$(registry)/$(repository)'
-      Dockerfile: 'Dockerfile'
-      buildContext: '$(System.DefaultWorkingDirectory)'
-      tags: '$(IMAGE_TAG)'
-  
+      command: "build"
+      repository: "$(registry)/$(repository)"
+      Dockerfile: "Dockerfile"
+      buildContext: "$(System.DefaultWorkingDirectory)"
+      tags: "$(IMAGE_TAG)"
+
+  # Push Main API
   - task: Docker@2
-    displayName: 'Push Docker Image'
+    displayName: "Push API Docker Image"
     inputs:
-      command: 'push'
-      containerRegistry: 'alive-acr'
-      repository: '$(repository)'
-      tags: '$(IMAGE_TAG)'
+      command: "push"
+      containerRegistry: "alive-acr"
+      repository: "$(repository)"
+      tags: "$(IMAGE_TAG)"
+
+  # Build Script Generator
+  - task: Docker@2
+    displayName: "Build Script Gen Docker Image"
+    inputs:
+      command: "build"
+      repository: "$(registry)/$(scriptRepository)"
+      Dockerfile: "scripts/Dockerfile"
+      buildContext: "$(System.DefaultWorkingDirectory)/scripts"
+      tags: "$(IMAGE_TAG)"
+
+  # Push Script Generator
+  - task: Docker@2
+    displayName: "Push Script Gen Docker Image"
+    inputs:
+      command: "push"
+      containerRegistry: "alive-acr"
+      repository: "$(scriptRepository)"
+      tags: "$(IMAGE_TAG)"

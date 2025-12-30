@@ -20,6 +20,7 @@ func (a *API) SetupRoutes(r *gin.Engine) {
 	{
 		v1.GET("/versions", a.HandleGetAllVersions)
 		v1.GET("/version/:version_id", a.HandleGetVersionContent)
+		v1.GET("/vectors/:version_id", a.HandleGetVectors)
 		v1.GET("/search", a.HandleSearch)
 	}
 

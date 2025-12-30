@@ -48,7 +48,7 @@ type Verses struct {
 type BibleVectors struct {
 	ID        uint            `gorm:"primaryKey" json:"id"`
 	VerseID   uint            `gorm:"not null;index" json:"verse_id"`
-	Embedding pgvector.Vector `gorm:"type:vector(1536)" json:"embedding"`
+	Embedding pgvector.Vector `gorm:"type:vector(384)" json:"embedding"`
 }
 
 // VersionListItem is a version list item

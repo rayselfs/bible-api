@@ -15,12 +15,9 @@ import (
 	importer "hhc/bible-api/internal/import"
 	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
-	oaiOpenAI "hhc/bible-api/internal/pkg/openai"
 	"hhc/bible-api/internal/server"
 
 	"github.com/gin-gonic/gin"
-	"github.com/openai/openai-go/v2"
-	"github.com/openai/openai-go/v2/option"
 
 	_ "hhc/bible-api/docs"
 )
@@ -95,27 +92,24 @@ func runImport() {
 	database.Connect(cfg)
 	defer database.Close()
 
-	oaiClient := openai.NewClient(
-		option.WithBaseURL(cfg.AzureOpenAIBaseURL),
-		option.WithAPIKey(cfg.AzureOpenAIKey),
-	)
-	openAIService := oaiOpenAI.NewOpenAIService(&oaiClient, cfg.AzureOpenAIModelName)
+	database.Connect(cfg)
+	defer database.Close()
 
 	// Execute import based on flags
 	if hasDir {
 		// Mode 1: Import all JSON files from directory
-		if err := importer.ImportAllFromDataDir(database.DB, openAIService, *dirFlag); err != nil {
+		if err := importer.ImportAllFromDataDir(database.DB, *dirFlag); err != nil {
 			log.Fatalf("error: %v", err)
 		}
 	} else if hasFile {
 		if hasBook && hasChapter {
 			// Mode 3: Import single chapter
-			if err := importer.Run(database.DB, openAIService, *fileFlag, *bookFlag, *chapterFlag); err != nil {
+			if err := importer.Run(database.DB, *fileFlag, *bookFlag, *chapterFlag); err != nil {
 				log.Fatalf("error: %v", err)
 			}
 		} else {
 			// Mode 2: Import single file
-			if err := importer.Run(database.DB, openAIService, *fileFlag, 0, 0); err != nil {
+			if err := importer.Run(database.DB, *fileFlag, 0, 0); err != nil {
 				log.Fatalf("error: %v", err)
 			}
 		}
@@ -143,14 +137,9 @@ func runServer() {
 
 	// Initialize Services
 	store := models.NewStore(database.DB)
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	oaiClient := openai.NewClient(
-		option.WithBaseURL(cfg.AzureOpenAIBaseURL),
-		option.WithAPIKey(cfg.AzureOpenAIKey),
-	)
 
 	// Initialize Handlers
-	api := server.NewAPI(store, &oaiClient, httpClient, cfg.AzureOpenAIModelName)
+	api := server.NewAPI(store)
 
 	// Setup Router
 	r := gin.Default()

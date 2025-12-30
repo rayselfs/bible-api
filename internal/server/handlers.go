@@ -5,28 +5,22 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"hhc/bible-api/internal/logger"
 	"hhc/bible-api/internal/models"
-	"hhc/bible-api/internal/pkg/openai"
 
 	"github.com/gin-gonic/gin"
-	oai "github.com/openai/openai-go/v2"
+	"gorm.io/gorm"
 )
 
 type API struct {
-	store         *models.Store
-	openAIService *openai.OpenAIService
+	store *models.Store
 }
 
-func NewAPI(store *models.Store, oaiClient *oai.Client, httpClient *http.Client, openAIModelName string) *API {
-	openAIService := openai.NewOpenAIService(oaiClient, openAIModelName)
-
+func NewAPI(store *models.Store) *API {
 	return &API{
-		store:         store,
-		openAIService: openAIService,
+		store: store,
 	}
 }
 
@@ -143,61 +137,78 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 	}
 }
 
-// HandleSearch 執行混合搜尋
-// @Summary      Search Bible verses
-// @Description  Perform hybrid (keyword + semantic) search for Bible verses
+// HandleGetVectors Stream Bible vectors by version ID
+// @Summary      Stream Bible vectors (Float32Array binary) by version ID
+// @Description  Stream all verse vectors for the specified version ID using chunked transfer encoding
 // @Tags         Bible
-// @Produce      json
-// @Param        q          query     string  true  "Search query"
-// @Param        version    query     string  true  "Version code to filter (e.g., CUV)"
-// @Param        top        query     int     false "Number of results to return (default: 10)"
-// @Success      200        {array}   models.SearchResult "Successfully retrieved search results"
-// @Failure      400        {object}  ErrorResponse  "Invalid input parameters"
-// @Failure      500        {object}  ErrorResponse  "Internal server error"
-// @Router       /api/bible/v1/search [get]
-func (a *API) HandleSearch(c *gin.Context) {
-	queryText := c.Query("q")
-	if queryText == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "query (q) is required"})
+// @Produce      application/octet-stream
+// @Param        version_id  path      int  true  "Version ID"
+// @Success      200        {string}  string "Successfully streaming vectors"
+// @Failure      400        {object}  ErrorResponse "Invalid input parameters"
+// @Failure      500        {object}  ErrorResponse "Internal server error"
+// @Router       /api/bible/v1/vectors/{version_id} [get]
+func (a *API) HandleGetVectors(c *gin.Context) {
+	appLogger := logger.GetAppLogger()
+
+	versionID := c.Param("version_id")
+	if versionID == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "version_id parameter is required"})
 		return
-	}
-	versionFilter := c.Query("version")
-	if versionFilter == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "version is required"})
-		return
-	}
-	topK, _ := strconv.Atoi(c.DefaultQuery("top", "10"))
-	if topK <= 0 {
-		topK = 10
 	}
 
-	ctx := c.Request.Context()
-	queryVector64, err := a.openAIService.GetEmbedding(ctx, queryText)
+	id, err := strconv.Atoi(versionID)
 	if err != nil {
-		logger.GetAppLogger().Errorf("Failed to get query embedding: %v", err)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to process search query"})
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid version_id parameter"})
 		return
 	}
 
-	queryVector := make([]float32, len(queryVector64))
-	for i, v := range queryVector64 {
-		queryVector[i] = float32(v)
+	appLogger.Infof("Starting to stream Bible vectors for version ID: %d", id)
+
+	// Set headers for binary stream
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Cache-Control", "public, max-age=3600")
+	c.Header("Connection", "keep-alive")
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	defer cancel()
+
+	contentChan, errorChan := a.store.StreamVectorsForVersion(c, ctx, uint(id))
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Streaming not supported"})
+		return
 	}
 
-	results, err := a.store.SearchVerses(c, ctx, queryText, queryVector, versionFilter, topK)
-	if err != nil {
-		// Check if it's a forbidden error
-		errMsg := err.Error()
-		if strings.Contains(strings.ToLower(errMsg), "forbidden") {
-			c.JSON(http.StatusForbidden, ErrorResponse{Error: errMsg})
+	for {
+		select {
+		case content, ok := <-contentChan:
+			if !ok {
+				return
+			}
+			if _, err := c.Writer.Write(content); err != nil {
+				appLogger.Errorf("Error writing vectors: %v", err)
+				return
+			}
+			flusher.Flush()
+
+		case err := <-errorChan:
+			if err != nil {
+				appLogger.Errorf("Error streaming vectors: %v", err)
+				// Cannot write JSON error if we already started writing binary
+				return
+			}
+		case <-ctx.Done():
 			return
 		}
-		logger.GetAppLogger().Errorf("Failed to execute Hybrid Search: %v", err)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to retrieve search results"})
-		return
 	}
+}
 
-	c.JSON(http.StatusOK, results)
+// HandleSearch 執行混合搜尋 (Legacy: Deprecation Warning)
+// @Summary      Search Bible verses
+// @Router       /api/bible/v1/search [get]
+func (a *API) HandleSearch(c *gin.Context) {
+	c.JSON(http.StatusGone, ErrorResponse{Error: "This endpoint is deprecated. Use client-side search."})
 }
 
 // UpdateVerseRequest represents the request body for updating a verse
@@ -205,9 +216,9 @@ type UpdateVerseRequest struct {
 	Text string `json:"text" binding:"required"`
 }
 
-// HandleUpdateVerse updates a verse's text and embedding
-// @Summary      Update verse content
-// @Description  Update verse text and regenerate embedding
+// HandleUpdateVerse updates a verse's text (Embedding update disabled for migration)
+// @Summary      Update verse content (Text Only)
+// @Description  Update verse text. NOTE: Vector embedding is NOT updated automatically. You must run the python script to regenerate vectors.
 // @Tags         Bible
 // @Accept       json
 // @Produce      json
@@ -231,29 +242,22 @@ func (a *API) HandleUpdateVerse(c *gin.Context) {
 		return
 	}
 
-	// Generate new embedding
-	ctx := c.Request.Context()
-	embedding64, err := a.openAIService.GetEmbedding(ctx, req.Text)
-	if err != nil {
-		logger.GetAppLogger().Errorf("Failed to get embedding for updated verse: %v", err)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to generate embedding"})
+	// Better: Just update text.
+	if err := a.store.DB.Model(&models.Verses{}).Where("id = ?", verseID).Update("text", req.Text).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to update verse text"})
 		return
 	}
 
-	embedding32 := make([]float32, len(embedding64))
-	for i, v := range embedding64 {
-		embedding32[i] = float32(v)
-	}
-
-	// Update verse in store
-	if err := a.store.UpdateVerse(c, ctx, uint(verseID), req.Text, embedding32); err != nil {
-		logger.GetAppLogger().Errorf("Failed to update verse %d: %v", verseID, err)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to update verse"})
-		return
+	// Signal version update
+	// We need version ID.
+	var result struct{ VersionID uint }
+	a.store.DB.Raw("SELECT b.version_id FROM verses v JOIN chapters c ON v.chapter_id = c.id JOIN books b ON c.book_id = b.id WHERE v.id = ?", verseID).Scan(&result)
+	if result.VersionID > 0 {
+		a.store.DB.Model(&models.Versions{}).Where("id = ?", result.VersionID).Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP"))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Verse updated successfully",
+		"message": "Verse updated successfully (Text only, Vector stale)",
 		"id":      verseID,
 	})
 }

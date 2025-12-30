@@ -2,9 +2,11 @@ package models
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"hhc/bible-api/internal/utils"
+	"math"
 	"slices"
 	"sort"
 
@@ -92,6 +94,107 @@ func (s *Store) GetAllVersions(c *gin.Context) ([]VersionListItem, error) {
 	}
 
 	return versionList, nil
+}
+
+// StreamVectorsForVersion streams vector data for a specific version
+// Format: Binary stream of [VerseID (uint32) + Vector (384 * float32)]
+func (s *Store) StreamVectorsForVersion(c *gin.Context, ctx context.Context, versionID uint) (<-chan []byte, <-chan error) {
+	contentChan := make(chan []byte, 50)
+	errorChan := make(chan error, 1)
+
+	go func() {
+		defer close(contentChan)
+		defer close(errorChan)
+
+		// 1. Get IDs of books belonging to this version
+		var bookIDs []uint
+		if err := s.DB.Model(&Books{}).Where("version_id = ?", versionID).Pluck("id", &bookIDs).Error; err != nil {
+			errorChan <- fmt.Errorf("failed to fetch books: %w", err)
+			return
+		}
+
+		if len(bookIDs) == 0 {
+			return
+		}
+
+		// 2. Query vectors
+		rows, err := s.DB.Table("bible_vectors").
+			Select("bible_vectors.verse_id, bible_vectors.embedding").
+			Joins("JOIN verses ON bible_vectors.verse_id = verses.id").
+			Joins("JOIN chapters ON verses.chapter_id = chapters.id").
+			Where("chapters.book_id IN ?", bookIDs).
+			Order("bible_vectors.verse_id ASC").
+			Rows()
+
+		if err != nil {
+			errorChan <- fmt.Errorf("failed to query vectors: %w", err)
+			return
+		}
+		defer rows.Close()
+
+		// Buffer for batching 100 verses (~150KB)
+		// 1 verse = 4 bytes (ID) + 384 * 4 bytes (Vector) = 1540 bytes
+		const vectorDim = 384
+		const bytesPerVerse = 4 + (vectorDim * 4)
+		const batchSize = 100
+
+		buffer := make([]byte, 0, batchSize*bytesPerVerse)
+		count := 0
+
+		for rows.Next() {
+			var verseID uint32
+			var vec pgvector.Vector
+
+			if err := rows.Scan(&verseID, &vec); err != nil {
+				errorChan <- fmt.Errorf("scan error: %w", err)
+				return
+			}
+
+			if len(vec.Slice()) != vectorDim {
+				// verify dimension to avoid corruption
+				// Skip or error? Error is safer.
+				errorChan <- fmt.Errorf("vector dimension mismatch: expected %d, got %d", vectorDim, len(vec.Slice()))
+				return
+			}
+
+			// Append VerseID (uint32 LittleEndian)
+			idBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(idBytes, verseID)
+			buffer = append(buffer, idBytes...)
+
+			// Append Vector (float32 LittleEndian)
+			for _, v := range vec.Slice() {
+				bits := math.Float32bits(v)
+				floatBytes := make([]byte, 4)
+				binary.LittleEndian.PutUint32(floatBytes, bits)
+				buffer = append(buffer, floatBytes...)
+			}
+
+			count++
+			if count >= batchSize {
+				// Flush buffer
+				out := make([]byte, len(buffer))
+				copy(out, buffer)
+				contentChan <- out
+				buffer = buffer[:0]
+				count = 0
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}
+
+		// Flush remaining buffer
+		if len(buffer) > 0 {
+			contentChan <- buffer
+		}
+	}()
+
+	return contentChan, errorChan
 }
 
 // StreamBibleContent streams Bible content by version ID using channels
