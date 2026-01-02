@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -79,6 +80,7 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // Prevent Nginx buffering (if using Nginx)
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
@@ -96,37 +98,67 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 	}
 
 	// Send initial event
-	fmt.Fprintf(c.Writer, "data: %s\n\n", `{"type":"start","message":"開始傳輸聖經內容"}`)
+	startEvent := map[string]string{
+		"type":    "start",
+		"message": "開始傳輸聖經內容",
+	}
+	startBytes, _ := json.Marshal(startEvent)
+	eventID := 1 // Start event ID from 1
+	fmt.Fprintf(c.Writer, "id: %d\ndata: %s\n\n", eventID, string(startBytes))
 	flusher.Flush()
+	eventID++
 
 	bookCount := 0
+	isFirstEvent := true // Track first event (version header) to exclude from book count
 	for {
 		select {
 		case content, ok := <-contentChan:
 			if !ok {
 				// Channel closed, send completion event
-				fmt.Fprintf(c.Writer, "data: %s\n\n", fmt.Sprintf(`{"type":"complete","total_books":%d,"message":"傳輸完成"}`, bookCount))
+				completeEvent := map[string]interface{}{
+					"type":        "complete",
+					"total_books": bookCount,
+					"message":     "傳輸完成",
+				}
+				completeBytes, _ := json.Marshal(completeEvent)
+				fmt.Fprintf(c.Writer, "id: %d\ndata: %s\n\n", eventID, string(completeBytes))
 				flusher.Flush()
 				appLogger.Infof("Successfully streamed Bible content for version %d, total books: %d", id, bookCount)
 				return
 			}
 
-			// Send book data
-			fmt.Fprintf(c.Writer, "data: %s\n\n", string(content))
+			// Send content (version header or book data) with event ID
+			fmt.Fprintf(c.Writer, "id: %d\ndata: %s\n\n", eventID, string(content))
 			flusher.Flush()
-			bookCount++
+			eventID++
+
+			// Only count books, skip version header (first event)
+			if !isFirstEvent {
+				bookCount++
+			}
+			isFirstEvent = false
 
 		case err := <-errorChan:
 			if err != nil {
 				appLogger.Errorf("Error streaming Bible content: %v", err)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", fmt.Sprintf(`{"type":"error","message":"傳輸錯誤: %s"}`, err.Error()))
+				errorEvent := map[string]string{
+					"type":    "error",
+					"message": "傳輸錯誤: " + err.Error(),
+				}
+				errorBytes, _ := json.Marshal(errorEvent)
+				fmt.Fprintf(c.Writer, "id: %d\ndata: %s\n\n", eventID, string(errorBytes))
 				flusher.Flush()
 				return
 			}
 
 		case <-ctx.Done():
 			appLogger.Warnf("Streaming timeout for version %d", id)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", `{"type":"timeout","message":"傳輸超時"}`)
+			timeoutEvent := map[string]string{
+				"type":    "timeout",
+				"message": "傳輸超時",
+			}
+			timeoutBytes, _ := json.Marshal(timeoutEvent)
+			fmt.Fprintf(c.Writer, "id: %d\ndata: %s\n\n", eventID, string(timeoutBytes))
 			flusher.Flush()
 			return
 
