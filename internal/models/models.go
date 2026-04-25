@@ -11,6 +11,7 @@ type Versions struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Code      string    `gorm:"uniqueIndex;not null;size:20" json:"code"`
 	Name      string    `gorm:"not null;size:100" json:"name"`
+	Locale    string    `gorm:"size:20" json:"locale"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Books     []Books   `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE"`
 }
@@ -56,6 +57,15 @@ type VersionListItem struct {
 	ID        uint   `json:"id"`
 	Code      string `json:"code"`
 	Name      string `json:"name"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// VersionListItemV2 is a version list item with locale
+type VersionListItemV2 struct {
+	ID        uint   `json:"id"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	Locale    string `json:"locale"`
 	UpdatedAt int64  `json:"updated_at"`
 }
 

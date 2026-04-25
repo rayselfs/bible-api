@@ -23,4 +23,10 @@ func (a *API) SetupRoutes(r *gin.Engine) {
 		v1.GET("/vectors/:version_id", a.HandleGetVectors)
 		v1.POST("/verse/:id", a.HandleUpdateVerse)
 	}
+
+	v2 := r.Group("/api/bible/v2")
+	v2.Use(middleware.AuthMiddleware())
+	{
+		v2.GET("/versions", a.HandleGetAllVersionsV2)
+	}
 }

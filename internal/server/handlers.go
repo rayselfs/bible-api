@@ -31,7 +31,7 @@ type ErrorResponse struct {
 	Error string `json:"error" example:"error message"`
 }
 
-// handleGetAllVersions Get all Bible versions
+// HandleGetAllVersions Get all Bible versions
 // @Summary      Get all Bible versions
 // @Description  List all available Bible versions in the system
 // @Tags         Bible
@@ -41,6 +41,24 @@ type ErrorResponse struct {
 // @Router       /api/bible/v1/versions [get]
 func (a *API) HandleGetAllVersions(c *gin.Context) {
 	versions, err := a.store.GetAllVersions(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to retrieve versions"})
+		return
+	}
+
+	c.JSON(http.StatusOK, versions)
+}
+
+// HandleGetAllVersionsV2 Get all Bible versions (v2, includes locale)
+// @Summary      Get all Bible versions
+// @Description  List all available Bible versions including locale field
+// @Tags         Bible
+// @Produce      json
+// @Success      200        {array}   models.VersionListItemV2 "Successfully retrieved version list"
+// @Failure      500        {object}  ErrorResponse  "Internal server error"
+// @Router       /api/bible/v2/versions [get]
+func (a *API) HandleGetAllVersionsV2(c *gin.Context) {
+	versions, err := a.store.GetAllVersionsV2(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to retrieve versions"})
 		return

@@ -47,6 +47,7 @@ func Migrate() {
 		migrations.AddUpdatedAtToVersions,
 		migrations.ChangeVectorDimension,
 		migrations.AddVectorUpdateLogs,
+		migrations.AddLocaleToVersions,
 	})
 
 	if err := m.Migrate(); err != nil {

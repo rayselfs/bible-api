@@ -95,6 +95,33 @@ func (s *Store) GetAllVersions(c *gin.Context) ([]VersionListItem, error) {
 	return versionList, nil
 }
 
+func (s *Store) GetAllVersionsV2(c *gin.Context) ([]VersionListItemV2, error) {
+	hasPermission := checkPermission(c, PermissionBibleRead)
+
+	query := s.DB
+	if !hasPermission {
+		query = query.Where("code IN ?", publicVersionList)
+	}
+
+	var versions []Versions
+	if err := query.Find(&versions).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch versions: %w", err)
+	}
+
+	versionList := make([]VersionListItemV2, len(versions))
+	for i, version := range versions {
+		versionList[i] = VersionListItemV2{
+			ID:        version.ID,
+			Code:      version.Code,
+			Name:      version.Name,
+			Locale:    version.Locale,
+			UpdatedAt: version.UpdatedAt.Unix(),
+		}
+	}
+
+	return versionList, nil
+}
+
 // StreamVectorsForVersion streams vector data for a specific version
 // Format: Binary stream of [VerseID (uint32) + Vector (384 * float32)]
 func (s *Store) StreamVectorsForVersion(c *gin.Context, ctx context.Context, versionID uint) (<-chan []byte, <-chan error) {
