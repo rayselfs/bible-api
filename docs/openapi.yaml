@@ -1,4 +1,7 @@
 openapi: 3.1.0
+x-hhc-service: bible-api
+x-hhc-owner: HHC Platform
+x-hhc-repository: rayselfs/bible-api
 info:
   title: Bible API
   version: 1.0.0
@@ -13,8 +16,10 @@ security: []
 tags:
   - name: Operations
     description: Service operational endpoints.
-  - name: Bible
-    description: Bible content and maintenance endpoints.
+  - name: Public
+    description: Gateway-exposed browser operations.
+  - name: Private
+    description: Service operations not exposed by the API gateway.
 paths:
   /health:
     get:
@@ -22,6 +27,7 @@ paths:
       operationId: getHealth
       summary: Service health
       x-hhc-visibility: operations
+      x-hhc-callers: []
       responses:
         '200':
           description: Service is running.
@@ -31,11 +37,12 @@ paths:
                 $ref: '#/components/schemas/Health'
   /api/bible/v1/versions:
     get:
-      tags: [Bible]
+      tags: [Public]
       operationId: getVersionsV1
       summary: List Bible versions
-      description: Gateway-exposed public operation. Without trusted propagated permissions, the response is limited to public Bible versions.
+      description: Gateway-exposed public operation. The public API gateway clears identity headers, so gateway reads return only public Bible versions. Direct and internal callers can supply unverified identity headers because middleware only copies them.
       x-hhc-visibility: public
+      x-hhc-callers: [hhc-client]
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/Roles'
@@ -53,11 +60,25 @@ paths:
           $ref: '#/components/responses/RetrieveVersionsError'
   /api/bible/v1/content/{version_id}:
     get:
-      tags: [Bible]
+      tags: [Public]
       operationId: getVersionContent
       summary: Stream complete Bible content
-      description: Gateway-exposed public operation. The SSE stream emits a start event, a version header, zero or more book payloads, then a completion event. Trusted propagated permissions can permit non-public versions.
+      description: Gateway-exposed public operation. The public API gateway clears identity headers, so gateway reads can stream only public Bible versions. The handler writes a start event before store and access failures; error and timeout event data therefore use the already-started 200 response. Direct and internal callers can supply unverified identity headers because middleware only copies them.
       x-hhc-visibility: public
+      x-hhc-callers: [hhc-client, hhc-client-v2]
+      x-hhc-sse-events:
+        - name: start
+          fields: [type, message]
+        - name: header
+          fields: [version_id, version_code, version_name, updated_at, books]
+        - name: book
+          fields: [id, number, name, abbreviation, chapters]
+        - name: complete
+          fields: [type, total_books, message]
+        - name: error
+          fields: [type, message]
+        - name: timeout
+          fields: [type, message]
       parameters:
         - $ref: '#/components/parameters/VersionID'
         - $ref: '#/components/parameters/UserID'
@@ -73,14 +94,19 @@ paths:
         '400':
           $ref: '#/components/responses/InvalidVersionID'
         '500':
-          $ref: '#/components/responses/StreamingNotSupported'
+          description: The response writer does not support flushing. The handler has already set text/event-stream, so its JSON error bytes retain that media type.
+          content:
+            text/event-stream:
+              schema:
+                type: string
   /api/bible/v1/vectors/{version_id}:
     get:
-      tags: [Bible]
+      tags: [Public]
       operationId: getVersionVectors
       summary: Stream Bible vectors
-      description: Gateway-exposed public operation. The binary stream contains repeated little-endian records of one uint32 verse ID followed by 384 float32 values. Trusted propagated permissions can permit non-public versions.
+      description: Gateway-exposed public operation. The public API gateway clears identity headers, so gateway reads can stream only public Bible versions. The binary stream contains repeated little-endian records of one uint32 verse ID followed by 384 float32 values. A store, access, write, or timeout failure terminates the already-started 200 stream without a terminal record. Direct and internal callers can supply unverified identity headers because middleware only copies them.
       x-hhc-visibility: public
+      x-hhc-callers: []
       parameters:
         - $ref: '#/components/parameters/VersionID'
         - $ref: '#/components/parameters/UserID'
@@ -97,14 +123,19 @@ paths:
         '400':
           $ref: '#/components/responses/InvalidVersionID'
         '500':
-          $ref: '#/components/responses/StreamingNotSupported'
+          description: The response writer does not support flushing. The handler has already set application/octet-stream, so its JSON error bytes retain that media type.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
   /api/bible/v1/verse/{id}:
     post:
-      tags: [Bible]
+      tags: [Private]
       operationId: updateVerse
       summary: Update verse text
-      description: Private operation; it is not exposed by the API gateway. The handler requires the propagated X-Permissions value to include bible:edit or bible:admin. Middleware only copies identity headers and does not authenticate a caller.
+      description: Private operation; it is not exposed by the API gateway. The handler accepts an unverified X-Permissions value containing bible:edit or bible:admin. Middleware only copies identity headers and does not authenticate or authorize a caller.
       x-hhc-visibility: private
+      x-hhc-callers: []
       parameters:
         - $ref: '#/components/parameters/VerseID'
         - $ref: '#/components/parameters/UserID'
@@ -143,11 +174,12 @@ paths:
                 $ref: '#/components/schemas/Error'
   /api/bible/v2/versions:
     get:
-      tags: [Bible]
+      tags: [Public]
       operationId: getVersionsV2
       summary: List Bible versions with locales
-      description: Gateway-exposed public operation. Without trusted propagated permissions, the response is limited to public Bible versions.
+      description: Gateway-exposed public operation. The public API gateway clears identity headers, so gateway reads return only public Bible versions. Direct and internal callers can supply unverified identity headers because middleware only copies them.
       x-hhc-visibility: public
+      x-hhc-callers: [hhc-client-v2]
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/Roles'
@@ -169,14 +201,14 @@ components:
       name: X-User-ID
       in: header
       required: false
-      description: Optional identity context copied by middleware. It is not an authentication mechanism.
+      description: The public API gateway clears this header. Direct and internal callers can provide an unverified value; middleware copies it without authentication or authorization.
       schema:
         type: string
     Roles:
       name: X-Roles
       in: header
       required: false
-      description: Optional identity context copied by middleware. It is not an authentication mechanism.
+      description: The public API gateway clears this header. Direct and internal callers can provide an unverified value; middleware copies it without authentication or authorization.
       schema:
         type: string
     VersionID:
@@ -195,7 +227,7 @@ components:
       name: X-Permissions
       in: header
       required: false
-      description: Optional identity context copied by middleware. It is not an authentication mechanism; trusted callers can provide bible:read to access non-public versions.
+      description: The public API gateway clears this header. Direct and internal callers can provide an unverified value; middleware copies it without authentication or authorization. For a direct/internal read, bible:read changes version filtering; for the private write, bible:edit or bible:admin enables the handler.
       schema:
         type: string
   responses:
@@ -207,12 +239,6 @@ components:
             $ref: '#/components/schemas/Error'
     RetrieveVersionsError:
       description: Versions could not be retrieved.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    StreamingNotSupported:
-      description: Streaming is not supported by the response writer.
       content:
         application/json:
           schema:
