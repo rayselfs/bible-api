@@ -28,6 +28,7 @@ type operation struct {
 	Callers     []string            `yaml:"x-hhc-callers"`
 	Description string              `yaml:"description"`
 	Responses   map[string]response `yaml:"responses"`
+	SSEFrame    sseFrame            `yaml:"x-hhc-sse-frame"`
 	SSEEvents   []sseEvent          `yaml:"x-hhc-sse-events"`
 }
 
@@ -42,6 +43,11 @@ type response struct {
 type sseEvent struct {
 	Name   string   `yaml:"name"`
 	Fields []string `yaml:"fields"`
+}
+
+type sseFrame struct {
+	Fields []string `yaml:"fields"`
+	ID     string   `yaml:"id"`
 }
 
 func TestOpenAPICoversRegisteredRoutes(t *testing.T) {
@@ -123,8 +129,11 @@ func TestOpenAPICoversRegisteredRoutes(t *testing.T) {
 	if _, ok := content.Responses["200"].Content["text/event-stream"]; !ok {
 		t.Error("content 200 must be text/event-stream")
 	}
-	if _, ok := content.Responses["500"].Content["text/event-stream"]; !ok {
-		t.Error("content 500 must retain text/event-stream after the handler sets it")
+	if _, ok := content.Responses["500"]; ok {
+		t.Error("content must not document unreachable 500 response")
+	}
+	if !reflect.DeepEqual(content.SSEFrame.Fields, []string{"id", "data"}) || !strings.Contains(content.SSEFrame.ID, "id: <incrementing integer>") {
+		t.Errorf("content SSE frame = fields %v, id %q", content.SSEFrame.Fields, content.SSEFrame.ID)
 	}
 	wantSSEEvents := []sseEvent{
 		{Name: "start", Fields: []string{"type", "message"}},
@@ -142,8 +151,8 @@ func TestOpenAPICoversRegisteredRoutes(t *testing.T) {
 	if _, ok := vectors.Responses["200"].Content["application/octet-stream"]; !ok {
 		t.Error("vectors 200 must be application/octet-stream")
 	}
-	if _, ok := vectors.Responses["500"].Content["application/octet-stream"]; !ok {
-		t.Error("vectors 500 must retain application/octet-stream after the handler sets it")
+	if _, ok := vectors.Responses["500"]; ok {
+		t.Error("vectors must not document unreachable 500 response")
 	}
 	if !strings.Contains(vectors.Description, "terminates the already-started 200 stream without a terminal record") {
 		t.Errorf("vectors streaming termination = %q", vectors.Description)

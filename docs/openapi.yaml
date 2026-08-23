@@ -66,6 +66,9 @@ paths:
       description: Gateway-exposed public operation. The public API gateway clears identity headers, so gateway reads can stream only public Bible versions. The handler writes a start event before store and access failures; error and timeout event data therefore use the already-started 200 response. Direct and internal callers can supply unverified identity headers because middleware only copies them.
       x-hhc-visibility: public
       x-hhc-callers: [hhc-client, hhc-client-v2]
+      x-hhc-sse-frame:
+        fields: [id, data]
+        id: "id: <incrementing integer> emitted before each data: frame."
       x-hhc-sse-events:
         - name: start
           fields: [type, message]
@@ -93,12 +96,6 @@ paths:
                 type: string
         '400':
           $ref: '#/components/responses/InvalidVersionID'
-        '500':
-          description: The response writer does not support flushing. The handler has already set text/event-stream, so its JSON error bytes retain that media type.
-          content:
-            text/event-stream:
-              schema:
-                type: string
   /api/bible/v1/vectors/{version_id}:
     get:
       tags: [Public]
@@ -122,12 +119,6 @@ paths:
                 format: binary
         '400':
           $ref: '#/components/responses/InvalidVersionID'
-        '500':
-          description: The response writer does not support flushing. The handler has already set application/octet-stream, so its JSON error bytes retain that media type.
-          content:
-            application/octet-stream:
-              schema:
-                type: string
   /api/bible/v1/verse/{id}:
     post:
       tags: [Private]
