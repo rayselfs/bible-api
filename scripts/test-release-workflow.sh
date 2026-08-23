@@ -3,10 +3,12 @@ set -eu
 
 ci=.github/workflows/ci.yml
 release=.github/workflows/release.yml
+dockerfile=Dockerfile
 
 test ! -e .azure-devops/azure-pipelines.yml
 test -f "$ci"
 test -f "$release"
+test -f "$dockerfile"
 
 grep -q 'pull_request:' "$ci"
 grep -q 'workflow_dispatch:' "$ci"
@@ -63,3 +65,23 @@ if grep -q 'docs/\*\*\|\.github/workflows/ci.yml' "$release"; then
   echo 'docs-only and CI-only changes must not trigger the production release' >&2
   exit 1
 fi
+
+dockerfile_invalid=0
+if grep -q '^FROM --platform=' "$dockerfile"; then
+  echo 'Dockerfile must not use a dynamic FROM platform expression' >&2
+  dockerfile_invalid=1
+fi
+if grep -q 'github.com/swaggo/swag/cmd/swag@latest' "$dockerfile"; then
+  echo 'Dockerfile must pin the Swag generator version' >&2
+  dockerfile_invalid=1
+fi
+test "$dockerfile_invalid" -eq 0
+test "$(grep -Ec '^FROM ' "$dockerfile")" -eq 2
+grep -q '^FROM golang:1\.24\.6-alpine AS build$' "$dockerfile"
+grep -q 'github.com/swaggo/swag/cmd/swag@v1\.16\.6' "$dockerfile"
+grep -q 'swag init' "$dockerfile"
+grep -q 'CGO_ENABLED=0' "$dockerfile"
+grep -q 'GOOS=linux' "$dockerfile"
+grep -q '^FROM gcr.io/distroless/static-debian12:nonroot$' "$dockerfile"
+grep -q '^USER nonroot:nonroot$' "$dockerfile"
+grep -Fq 'ENTRYPOINT ["/bible-api"]' "$dockerfile"
