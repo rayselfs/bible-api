@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - .dockerignore
       - .github/workflows/release.yml
       - Dockerfile
       - go.mod

@@ -24,6 +24,7 @@ grep -q 'docker build -t bible-api:verify .' "$ci"
 
 grep -q '^  push:' "$release"
 grep -q 'branches: \[main\]' "$release"
+grep -q '      - \.dockerignore' "$release"
 grep -q 'workflow_dispatch:' "$release"
 grep -q 'deploy-bible-api-production' "$release"
 grep -Fq "github.event_name == 'push' && 'deploy-bible-api-production' || inputs.confirmation" "$release"
