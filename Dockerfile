@@ -1,41 +1,13 @@
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS base
-
-# Set the working directory
-WORKDIR /app
-
-# Copy go.mod and go.sum files
+FROM golang:1.24.6-alpine AS build
+WORKDIR /src
 COPY go.mod go.sum ./
-
-# Download Go module dependencies
 RUN go mod download
-
-# Build stage
-FROM base AS build
-
-# Swag setting
-RUN apk add --no-cache git curl
-RUN go install github.com/swaggo/swag/cmd/swag@latest
-RUN export PATH=$(go env GOPATH)/bin:$PATH
-
-# Copy the source code to the working directory
 COPY . .
+RUN go install github.com/swaggo/swag/cmd/swag@v1.16.6 \
+ && swag init -g cmd/main.go \
+ && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bible-api ./cmd/main.go
 
-RUN swag init -g cmd/main.go
-
-# Build the Go application
-ARG TARGETOS TARGETARCH
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /app/main cmd/main.go
-
-# STAGE 2: build the container to run
-FROM gcr.io/distroless/static-debian12 AS final
-
-# Set the working directory
-WORKDIR /app
-
-# Copy the binary from the build stage
-COPY --chown=nonroot:nonroot --from=build /app/main /app/main
-
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /bible-api /bible-api
 USER nonroot:nonroot
-
-# Set the entrypoint command for the container
-ENTRYPOINT ["/app/main"]
+ENTRYPOINT ["/bible-api"]
