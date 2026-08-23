@@ -16,6 +16,14 @@ steps:
   - checkout: self
     fetchDepth: 0
 
+  - task: NodeTool@0
+    inputs:
+      versionSpec: "24.x"
+    displayName: "Use Node.js 24"
+
+  - script: npx --yes @redocly/cli@2.47.0 lint docs/openapi.yaml
+    displayName: "Validate OpenAPI contract"
+
   - script: |
       # Get the latest tag from git repository
       LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")

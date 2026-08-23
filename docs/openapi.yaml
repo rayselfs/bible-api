@@ -1,0 +1,277 @@
+openapi: 3.1.0
+info:
+  title: Bible API
+  version: 1.0.0
+  description: Service-owned contract for the Bible API. The legacy Swagger 2.0 document remains available at /swagger/* and is not this catalog source.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: /
+    description: Service root
+security: []
+tags:
+  - name: Operations
+    description: Service operational endpoints.
+  - name: Bible
+    description: Bible content and maintenance endpoints.
+paths:
+  /health:
+    get:
+      tags: [Operations]
+      operationId: getHealth
+      summary: Service health
+      x-hhc-visibility: operations
+      responses:
+        '200':
+          description: Service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /api/bible/v1/versions:
+    get:
+      tags: [Bible]
+      operationId: getVersionsV1
+      summary: List Bible versions
+      description: Gateway-exposed public operation. Without trusted propagated permissions, the response is limited to public Bible versions.
+      x-hhc-visibility: public
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/Roles'
+        - $ref: '#/components/parameters/Permissions'
+      responses:
+        '200':
+          description: Available Bible versions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Version'
+        '500':
+          $ref: '#/components/responses/RetrieveVersionsError'
+  /api/bible/v1/content/{version_id}:
+    get:
+      tags: [Bible]
+      operationId: getVersionContent
+      summary: Stream complete Bible content
+      description: Gateway-exposed public operation. The SSE stream emits a start event, a version header, zero or more book payloads, then a completion event. Trusted propagated permissions can permit non-public versions.
+      x-hhc-visibility: public
+      parameters:
+        - $ref: '#/components/parameters/VersionID'
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/Roles'
+        - $ref: '#/components/parameters/Permissions'
+      responses:
+        '200':
+          description: Server-Sent Events containing Bible content.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/InvalidVersionID'
+        '500':
+          $ref: '#/components/responses/StreamingNotSupported'
+  /api/bible/v1/vectors/{version_id}:
+    get:
+      tags: [Bible]
+      operationId: getVersionVectors
+      summary: Stream Bible vectors
+      description: Gateway-exposed public operation. The binary stream contains repeated little-endian records of one uint32 verse ID followed by 384 float32 values. Trusted propagated permissions can permit non-public versions.
+      x-hhc-visibility: public
+      parameters:
+        - $ref: '#/components/parameters/VersionID'
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/Roles'
+        - $ref: '#/components/parameters/Permissions'
+      responses:
+        '200':
+          description: Binary vector stream.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/InvalidVersionID'
+        '500':
+          $ref: '#/components/responses/StreamingNotSupported'
+  /api/bible/v1/verse/{id}:
+    post:
+      tags: [Bible]
+      operationId: updateVerse
+      summary: Update verse text
+      description: Private operation; it is not exposed by the API gateway. The handler requires the propagated X-Permissions value to include bible:edit or bible:admin. Middleware only copies identity headers and does not authenticate a caller.
+      x-hhc-visibility: private
+      parameters:
+        - $ref: '#/components/parameters/VerseID'
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/Roles'
+        - $ref: '#/components/parameters/Permissions'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateVerseRequest'
+      responses:
+        '200':
+          description: Verse updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateVerseResponse'
+        '400':
+          description: Invalid verse ID or request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Missing, malformed, or insufficient propagated permissions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Verse text could not be updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/bible/v2/versions:
+    get:
+      tags: [Bible]
+      operationId: getVersionsV2
+      summary: List Bible versions with locales
+      description: Gateway-exposed public operation. Without trusted propagated permissions, the response is limited to public Bible versions.
+      x-hhc-visibility: public
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/Roles'
+        - $ref: '#/components/parameters/Permissions'
+      responses:
+        '200':
+          description: Available Bible versions with locale.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VersionV2'
+        '500':
+          $ref: '#/components/responses/RetrieveVersionsError'
+components:
+  parameters:
+    UserID:
+      name: X-User-ID
+      in: header
+      required: false
+      description: Optional identity context copied by middleware. It is not an authentication mechanism.
+      schema:
+        type: string
+    Roles:
+      name: X-Roles
+      in: header
+      required: false
+      description: Optional identity context copied by middleware. It is not an authentication mechanism.
+      schema:
+        type: string
+    VersionID:
+      name: version_id
+      in: path
+      required: true
+      schema:
+        type: integer
+    VerseID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    Permissions:
+      name: X-Permissions
+      in: header
+      required: false
+      description: Optional identity context copied by middleware. It is not an authentication mechanism; trusted callers can provide bible:read to access non-public versions.
+      schema:
+        type: string
+  responses:
+    InvalidVersionID:
+      description: Version ID is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RetrieveVersionsError:
+      description: Versions could not be retrieved.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StreamingNotSupported:
+      description: Streaming is not supported by the response writer.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+    Version:
+      type: object
+      required: [id, code, name, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        code:
+          type: string
+        name:
+          type: string
+        updated_at:
+          type: integer
+          format: int64
+    VersionV2:
+      type: object
+      required: [id, code, name, locale, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        code:
+          type: string
+        name:
+          type: string
+        locale:
+          type: string
+        updated_at:
+          type: integer
+          format: int64
+    UpdateVerseRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+    UpdateVerseResponse:
+      type: object
+      required: [message, id]
+      properties:
+        message:
+          type: string
+        id:
+          type: integer
+          format: int64
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
