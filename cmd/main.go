@@ -142,7 +142,8 @@ func runServer() {
 	api := server.NewAPI(store)
 
 	// Setup Router
-	r := gin.Default()
+	r := gin.New()
+	r.Use(server.RequestLogger(), gin.Recovery())
 	api.SetupRoutes(r)
 
 	// Setup Server with timeouts
