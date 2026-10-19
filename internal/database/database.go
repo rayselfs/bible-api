@@ -28,6 +28,15 @@ func Connect(cfg *configs.Env) {
 		appLogger.Fatalf("Failed to connect to database: %v", err)
 	}
 
+	sqlDB, err := DB.DB()
+	if err != nil {
+		appLogger.Fatalf("Failed to configure database pool: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+
 	appLogger.Info("Database connection successful")
 }
 

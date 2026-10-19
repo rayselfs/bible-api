@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -57,8 +58,15 @@ func vectorTestStore(t *testing.T) (*Store, *gin.Context) {
  INSERT INTO books VALUES(1,1,1,'Fixture','F'); INSERT INTO chapters VALUES(1,1,1);
  INSERT INTO verses SELECT n,1,n,'Fixture' FROM generate_series(1,5201) n;
  INSERT INTO bible_vectors SELECT n, array_fill(0::real,ARRAY[384])::vector FROM generate_series(1,5201) n;`
-	if err := db.Exec(fixture).Error; err != nil {
-		t.Fatal(err)
+	setupCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	for _, statement := range strings.Split(fixture, ";") {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if err := db.WithContext(setupCtx).Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("GET", "/", nil)
@@ -91,7 +99,7 @@ func TestVectorStreamCancellationReleasesPool(t *testing.T) {
 			for range errors {
 			}
 		})
-		waitVectorCondition(t, func() bool { return len(content) == cap(content) && db.Stats().InUse == 1 }, "stream never filled its buffer while holding a connection")
+		waitVectorCondition(t, func() bool { return len(content) == cap(content) && db.Stats().InUse == 1 && vectorProducerWaiting() }, "stream never filled its buffer while holding a connection")
 		cancel()
 		select {
 		case err, ok := <-errors:
@@ -312,4 +320,18 @@ func TestBibleContentStreamCancellationAndFormat(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("SSE producer did not exit")
 	}
+}
+
+// Observe the producer's blocked state so cancel cannot win at the preceding row check.
+// Both the original channel send and the fixed context-aware select are valid preconditions.
+func vectorProducerWaiting() bool {
+	stack := make([]byte, 1<<20)
+	n := runtime.Stack(stack, true)
+	for _, goroutine := range strings.Split(string(stack[:n]), "\n\n") {
+		lines := strings.Split(goroutine, "\n")
+		if len(lines) > 1 && (strings.Contains(lines[0], "[chan send]") || strings.Contains(lines[0], "[select]")) && strings.Contains(lines[1], "(*Store).StreamVectorsForVersion.func1()") {
+			return true
+		}
+	}
+	return false
 }
