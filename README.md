@@ -20,7 +20,8 @@ A modern, RESTful Bible API built with Go. This API provides access to Bible con
 
 ### Health Check
 
-- `GET /health` - Service health status
+- `GET /health` - Process liveness (unchanged)
+- `GET /ready` - Local Dapr outbound readiness; operational endpoint, not publicly routed
 
 ### Bible Versions
 
@@ -688,3 +689,10 @@ For support and questions, please open an issue in the repository or contact the
 Vector downloads keep their existing 384-dimensional little-endian binary format. Queries and buffered sends honor cancellation so a disconnected or slow consumer cannot retain a PostgreSQL connection indefinitely.
 
 CI uses disposable PostgreSQL 17 + pgvector for pool/stream integration tests. Locally set `BIBLE_TEST_DATABASE_URL` to a disposable loopback fixture and run `go test -race ./... -count=1 -p=1`. The tests create private schemas and synthetic vectors, then remove them. With no fixture URL, integration tests skip; production databases must never be used. Pool defaults remain initial budgets pending representative performance tests.
+
+
+## Dapr readiness and release handoff
+
+`GET /ready` returns `200 {"status":"UP"}` only when local Dapr `/v1.0/healthz/outbound` returns 204 within 500ms. It otherwise returns `503 {"status":"DOWN"}` and never acquires a PG connection. `DAPR_HTTP_PORT` defaults to 3500 (decimal 1..65535); optional `DAPR_API_TOKEN` is forwarded only to loopback. There are no retries, redirects, environment proxies, or fail-open switch. Without a sidecar, use `/health` for local liveness; readiness being 503 is expected. The server starts listening without waiting for Dapr, avoiding an app-channel health deadlock.
+
+This PR does not change production probes, PG settings, pool defaults, replicas, Dapr configuration, or gateway routes. A later infrastructure change can switch only readiness from `/health` to `/ready`, after a merged compatible image and an isolated ACA Dapr-only handoff test. The first image release still uses the old probe and cannot promise uninterrupted handoff. Runtime sidecar restarts on a single serving replica remain a separate availability risk.

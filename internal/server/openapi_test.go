@@ -71,6 +71,7 @@ func TestOpenAPICoversRegisteredRoutes(t *testing.T) {
 
 	want := map[string]string{
 		"/health":                            "get",
+		"/ready":                             "get",
 		"/api/bible/v1/versions":             "get",
 		"/api/bible/v1/content/{version_id}": "get",
 		"/api/bible/v1/vectors/{version_id}": "get",
@@ -101,6 +102,7 @@ func TestOpenAPICoversRegisteredRoutes(t *testing.T) {
 		callers    []string
 	}{
 		"/health get":                            {"Operations", "operations", []string{}},
+		"/ready get":                             {"Operations", "operations", []string{}},
 		"/api/bible/v1/versions get":             {"Public", "public", []string{"hhc-client"}},
 		"/api/bible/v1/content/{version_id} get": {"Public", "public", []string{"hhc-client", "hhc-client-v2"}},
 		"/api/bible/v1/vectors/{version_id} get": {"Public", "public", []string{}},
