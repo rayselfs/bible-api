@@ -70,7 +70,7 @@ func validateVersionAccess(c *gin.Context, versionCode string) error {
 func (s *Store) GetAllVersions(c *gin.Context) ([]VersionListItem, error) {
 	hasPermission := checkPermission(c, PermissionBibleRead)
 
-	query := s.DB
+	query := s.DB.WithContext(c.Request.Context())
 	if !hasPermission {
 		// If no permission, only return public versions
 		query = query.Where("code IN ?", publicVersionList)
@@ -98,7 +98,7 @@ func (s *Store) GetAllVersions(c *gin.Context) ([]VersionListItem, error) {
 func (s *Store) GetAllVersionsV2(c *gin.Context) ([]VersionListItemV2, error) {
 	hasPermission := checkPermission(c, PermissionBibleRead)
 
-	query := s.DB
+	query := s.DB.WithContext(c.Request.Context())
 	if !hasPermission {
 		query = query.Where("code IN ?", publicVersionList)
 	}
@@ -134,7 +134,7 @@ func (s *Store) StreamVectorsForVersion(c *gin.Context, ctx context.Context, ver
 
 		// 0. Fetch Version to check permissions
 		var version Versions
-		if err := s.DB.First(&version, versionID).Error; err != nil {
+		if err := s.DB.WithContext(ctx).First(&version, versionID).Error; err != nil {
 			errorChan <- fmt.Errorf("version not found: %w", err)
 			return
 		}
@@ -147,7 +147,7 @@ func (s *Store) StreamVectorsForVersion(c *gin.Context, ctx context.Context, ver
 
 		// 1. Get IDs of books belonging to this version
 		var bookIDs []uint
-		if err := s.DB.Model(&Books{}).Where("version_id = ?", versionID).Pluck("id", &bookIDs).Error; err != nil {
+		if err := s.DB.WithContext(ctx).Model(&Books{}).Where("version_id = ?", versionID).Pluck("id", &bookIDs).Error; err != nil {
 			errorChan <- fmt.Errorf("failed to fetch books: %w", err)
 			return
 		}
@@ -157,7 +157,7 @@ func (s *Store) StreamVectorsForVersion(c *gin.Context, ctx context.Context, ver
 		}
 
 		// 2. Query vectors
-		rows, err := s.DB.Table("bible_vectors").
+		rows, err := s.DB.WithContext(ctx).Table("bible_vectors").
 			Select("bible_vectors.verse_id, bible_vectors.embedding").
 			Joins("JOIN verses ON bible_vectors.verse_id = verses.id").
 			Joins("JOIN chapters ON verses.chapter_id = chapters.id").
@@ -214,7 +214,11 @@ func (s *Store) StreamVectorsForVersion(c *gin.Context, ctx context.Context, ver
 				// Flush buffer
 				out := make([]byte, len(buffer))
 				copy(out, buffer)
-				contentChan <- out
+				select {
+				case contentChan <- out:
+				case <-ctx.Done():
+					return
+				}
 				buffer = buffer[:0]
 				count = 0
 			}
@@ -229,7 +233,11 @@ func (s *Store) StreamVectorsForVersion(c *gin.Context, ctx context.Context, ver
 
 		// Flush remaining buffer
 		if len(buffer) > 0 {
-			contentChan <- buffer
+			select {
+			case contentChan <- buffer:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -273,7 +281,11 @@ func (s *Store) StreamBibleContent(c *gin.Context, ctx context.Context, versionI
 			errorChan <- fmt.Errorf("failed to marshal version header: %w", err)
 			return
 		}
-		contentChan <- headerBytes
+		select {
+		case contentChan <- headerBytes:
+		case <-ctx.Done():
+			return
+		}
 
 		// Get books one by one and stream them
 		var books []Books
@@ -299,7 +311,11 @@ func (s *Store) StreamBibleContent(c *gin.Context, ctx context.Context, versionI
 				return
 			}
 
-			contentChan <- bookBytes
+			select {
+			case contentChan <- bookBytes:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 

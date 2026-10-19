@@ -23,8 +23,21 @@ func Connect(cfg *configs.Env) {
 	customGormLogger := logger.NewGormLogger(appLogger, gormLogger.Warn)
 
 	var err error
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: customGormLogger})
+	// Configure both timers before the first connection starts the Go 1.24 cleaner.
+	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: customGormLogger, DisableAutomaticPing: true})
 	if err != nil {
+		appLogger.Fatalf("Failed to connect to database: %v", err)
+	}
+
+	sqlDB, err := DB.DB()
+	if err != nil {
+		appLogger.Fatalf("Failed to configure database pool: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+	if err := sqlDB.Ping(); err != nil {
 		appLogger.Fatalf("Failed to connect to database: %v", err)
 	}
 

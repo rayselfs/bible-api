@@ -680,3 +680,11 @@ For support and questions, please open an issue in the repository or contact the
 ---
 
 **Built with ❤️ using Go**
+
+## PostgreSQL connection pool
+
+`DB_MAX_OPEN_CONNS` defaults to `8`, `DB_MAX_IDLE_CONNS` to `2`, `DB_CONN_MAX_LIFETIME` to `30m`, and `DB_CONN_MAX_IDLE_TIME` to `5m`. Open must be positive; idle may be zero but cannot exceed open; durations must be positive. Invalid settings stop startup. The server and importer read these same settings; an import can use `DB_MAX_OPEN_CONNS=4 DB_MAX_IDLE_CONNS=1` independently. Existing deployed jobs are not changed by this PR.
+
+Vector downloads keep their existing 384-dimensional little-endian binary format. Queries and buffered sends honor cancellation so a disconnected or slow consumer cannot retain a PostgreSQL connection indefinitely.
+
+CI uses disposable PostgreSQL 17 + pgvector for pool/stream integration tests. Locally set `BIBLE_TEST_DATABASE_URL` to a disposable loopback fixture and run `go test -race ./... -count=1 -p=1`. The tests create private schemas and synthetic vectors, then remove them. With no fixture URL, integration tests skip; production databases must never be used. Pool defaults remain initial budgets pending representative performance tests.

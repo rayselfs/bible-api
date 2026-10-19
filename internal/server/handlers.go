@@ -304,17 +304,19 @@ func (a *API) HandleUpdateVerse(c *gin.Context) {
 		return
 	}
 
+	db := a.store.DB.WithContext(c.Request.Context())
+
 	// Better: Just update text.
-	if err := a.store.DB.Model(&models.Verses{}).Where("id = ?", verseID).Update("text", req.Text).Error; err != nil {
+	if err := db.Model(&models.Verses{}).Where("id = ?", verseID).Update("text", req.Text).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to update verse text"})
 		return
 	}
 
 	// Signal version update
 	var result struct{ VersionID uint }
-	a.store.DB.Raw("SELECT b.version_id FROM verses v JOIN chapters c ON v.chapter_id = c.id JOIN books b ON c.book_id = b.id WHERE v.id = ?", verseID).Scan(&result)
+	db.Raw("SELECT b.version_id FROM verses v JOIN chapters c ON v.chapter_id = c.id JOIN books b ON c.book_id = b.id WHERE v.id = ?", verseID).Scan(&result)
 	if result.VersionID > 0 {
-		a.store.DB.Model(&models.Versions{}).Where("id = ?", result.VersionID).Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP"))
+		db.Model(&models.Versions{}).Where("id = ?", result.VersionID).Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP"))
 	}
 
 	// Async Vector Generation Log
@@ -324,7 +326,7 @@ func (a *API) HandleUpdateVerse(c *gin.Context) {
 		ReferenceID: verseIDStr,
 		Status:      "pending",
 	}
-	if err := a.store.DB.Create(&vectorLog).Error; err != nil {
+	if err := db.Create(&vectorLog).Error; err != nil {
 		// Just log error, don't fail the request as verse text is updated
 		logger.GetAppLogger().Errorf("Failed to create vector update log for verse %d: %v", verseID, err)
 	}
