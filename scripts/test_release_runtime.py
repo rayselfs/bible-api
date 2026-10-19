@@ -62,6 +62,14 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name)
+        self.source = self.path/'source'
+        self.source.mkdir()
+        self.git('init','-q')
+        (self.source/'migrations').mkdir()
+        (self.source/'migrations/baseline.sql').write_text('SELECT 1;\n')
+        self.git('add','.')
+        self.git('commit','-qm','synthetic migration baseline')
+        self.baseline_commit=self.git('rev-parse','HEAD').stdout.strip()
         (self.path/'az').write_text(FAKE_AZ)
         (self.path/'az').chmod(0o755)
         self.data = {'app': json.loads(json.dumps(APP)), 'revisions': {'bible-api--old': json.loads(json.dumps(BASE))},
@@ -70,15 +78,20 @@ class ReleaseRuntimeTests(unittest.TestCase):
             RESOURCE_GROUP='fixture', API_APP_NAME='bible-api', DAPR_APP_ID='bible-api',
             GITHUB_ENV=str(self.path/'github-env'), RUNNER_TEMP=str(self.path), GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
             IMAGE_REF=NEW_IMAGE)
-        self.review = {'baselineCommit': '5c2b6660cb02b710b860b20f20c98f64207708ed', 'baselineImage': IMAGE, 'baselinePoolMaxOpen': 8, 'ordinarySlots': 844,
+        self.review = {'baselineCommit': self.baseline_commit, 'baselineImage': IMAGE, 'baselinePoolMaxOpen': 8, 'ordinarySlots': 844,
             'otherConnectionsCeiling': 672, 'importsFrozen': True,
             'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'evidence': 'fixture-reviewed-budget'}
+
+    def git(self,*args):
+        return subprocess.run(['git','-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
+            '-c','core.hooksPath=/dev/null','-c','commit.gpgsign=false',*args],cwd=self.source,
+            capture_output=True,text=True,check=True)
 
     def run_cli(self, command, ok=True):
         (self.path/'azure.json').write_text(json.dumps(self.data))
         self.env['BIBLE_RELEASE_REVIEW'] = json.dumps(self.review)
         proc = subprocess.run(['python3', str(ROOT/'scripts/release-runtime.py'), command], env=self.env,
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=10,cwd=self.source)
         if ok:
             self.assertEqual(proc.returncode, 0, proc.stdout+proc.stderr)
         else:
@@ -88,6 +101,13 @@ class ReleaseRuntimeTests(unittest.TestCase):
             for line in (self.path/'github-env').read_text().splitlines():
                 key,value=line.split('=',1);self.env[key]=value
         return proc
+
+    def test_source_migration_change_blocks_release(self):
+        (self.source/'migrations/baseline.sql').write_text('SELECT 2;\n')
+        self.git('add','.')
+        self.git('commit','-qm','incompatible migration change')
+        self.run_cli('capture',False)
+        self.assertFalse((self.path/'updated').exists())
 
     def test_capture_preserves_original_probe_and_template(self):
         self.run_cli('capture')
