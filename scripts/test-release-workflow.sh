@@ -44,17 +44,17 @@ grep -q 'AZURE_SUBSCRIPTION_ID: \${{ vars.AZURE_SUBSCRIPTION_ID }}' "$release"
 grep -q 'azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43' "$release"
 grep -q 'IMAGE_TAG=main-\${GITHUB_SHA::7}' "$release"
 grep -q 'IMAGE_REF=\${ACR_LOGIN_SERVER}/\${IMAGE_REPOSITORY}@\${digest}' "$release"
-grep -q 'PREVIOUS_READY_REVISION=' "$release"
-grep -q 'PREVIOUS_IMAGE_REF=' "$release"
+grep -q 'PREVIOUS_READY_REVISION=' scripts/release-runtime.py
+grep -q 'PREVIOUS_IMAGE_REF=' scripts/release-runtime.py
 grep -q 'DAPR_APP_ID: bible-api' "$release"
-grep -q 'properties.configuration.dapr.appId' "$release"
-grep -q 'az containerapp update -g "\$RESOURCE_GROUP" -n "\$API_APP_NAME" --image "\$IMAGE_REF"' "$release"
-test "$(grep -Fc 'az containerapp update' "$release")" -eq 1
-grep -q 'az containerapp revision copy' "$release"
-grep -q -- '--from-revision "\$PREVIOUS_READY_REVISION"' "$release"
-grep -q -- '--image "\$PREVIOUS_IMAGE_REF"' "$release"
-grep -q './scripts/smoke-release.sh' "$release"
-grep -q '/v1.0/invoke/bible-api/method/health' scripts/smoke-release.sh
+grep -q 'python3 scripts/release-runtime.py capture' "$release"
+grep -q 'python3 scripts/release-runtime.py update' "$release"
+grep -q 'python3 scripts/release-runtime.py wait' "$release"
+grep -q 'python3 scripts/release-runtime.py rollback' "$release"
+grep -q 'PREVIOUS_READINESS_PATH' "$release"
+grep -Fq 'BIBLE_RELEASE_REVIEW: ${{ vars.BIBLE_RELEASE_REVIEW }}' "$release"
+python3 scripts/test_release_runtime.py
+python3 scripts/test_smoke_release.py
 
 if grep -Eq 'az deployment|terraform|containerapp job|--set-env-vars|--ingress|client-secret|password:' "$release"; then
   echo 'Bible release must update only the existing Container App image with OIDC' >&2

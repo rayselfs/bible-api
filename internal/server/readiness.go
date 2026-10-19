@@ -19,7 +19,7 @@ import (
 func NewReadinessHandler(port int, token string) gin.HandlerFunc {
 	client := &http.Client{
 		Timeout:       500 * time.Millisecond,
-		Transport:     &http.Transport{MaxIdleConns: 2, MaxIdleConnsPerHost: 2, IdleConnTimeout: 30 * time.Second},
+		Transport:     &http.Transport{DisableKeepAlives: true},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1.0/healthz/outbound", port)

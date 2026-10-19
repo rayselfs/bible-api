@@ -13,7 +13,26 @@ info:
   termsOfService: http://swagger.io/terms/
   title: Bible System API
   version: "1.0"
-paths: {}
+paths:
+  /ready:
+    get:
+      description: Checks local Dapr outbound health only, without acquiring a database connection.
+      produces: [application/json]
+      tags: [Operations]
+      summary: Dapr outbound readiness
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+            additionalProperties:
+              type: string
+        "503":
+          description: Service Unavailable
+          schema:
+            type: object
+            additionalProperties:
+              type: string
 schemes:
 - https
 swagger: "2.0"

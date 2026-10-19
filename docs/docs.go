@@ -55,7 +55,8 @@ const docTemplate = `{
                     }
                 }
             }
-        },}
+        }
+    }
 }`
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
