@@ -131,9 +131,9 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Remove and verify only this run's role and disposable RG
+      - name: Remove and verify exact owned roles and RGs across this run's attempts
         run: python3 scripts/aca-readiness-isolation/isolation.py cleanup
-      - name: Remove only unshared run-owned helper artifact
+      - name: Remove only proven unshared run-source helper artifacts across attempts
         if: always()
         run: python3 scripts/aca-readiness-isolation/isolation.py cleanup-helper
       - name: Preserve cleanup outcome

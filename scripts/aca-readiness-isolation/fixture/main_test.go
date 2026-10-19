@@ -128,7 +128,7 @@ func TestCallerSendsUniqueNonceAndRejectsBadJSON(t *testing.T) {
 	defer server.Close()
 	f := newFixture("caller", "123-1", "bible-ready-caller--baseline")
 	good := f.sample(server.URL, "baseline", 2)
-	if good.Status != 200 || !good.Valid || good.Nonce == "" || good.Hash == "" {
+	if good.Status != 200 || !good.Valid || good.Nonce == "" || good.Hash == "" || good.Version != 2 {
 		t.Fatalf("bad sample %+v", good)
 	}
 	bad = true
@@ -153,7 +153,7 @@ func TestPhaseAcknowledgementWaitsForPreviousRequest(t *testing.T) {
 	<-started
 	acknowledged := make(chan struct{})
 	go func() {
-		r := httptest.NewRequest("POST", "/phase/transition", nil)
+		r := httptest.NewRequest("POST", "/phase/recover_transition", nil)
 		r.RemoteAddr = "127.0.0.1:12"
 		f.handler().ServeHTTP(httptest.NewRecorder(), r)
 		close(acknowledged)
@@ -166,7 +166,7 @@ func TestPhaseAcknowledgementWaitsForPreviousRequest(t *testing.T) {
 	close(release)
 	<-done
 	<-acknowledged
-	if len(f.samples) != 1 || f.samples[0].Phase != "baseline" || f.phase != "transition" {
+	if len(f.samples) != 1 || f.samples[0].Phase != "baseline" || f.phase != "recover_transition" {
 		t.Fatal("phase attribution corrupted")
 	}
 }

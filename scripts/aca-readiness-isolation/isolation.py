@@ -18,11 +18,14 @@ import time
 import uuid
 import urllib.parse
 import urllib.request
+import urllib.error
 
 SUBSCRIPTION = '3765a72c-2c30-492c-8b88-7a26522903f8'
 PG_IMAGE = 'pgvector/pgvector:0.8.1-pg17@sha256:3e8b3adfd27b5707128f60956f62a793c3c9326ea8cfaf0eab7adccb5d700b21'
 OWNER = 'bible-readiness-isolation'
 APPS = ('bible-ready-target', 'bible-ready-pg', 'bible-ready-caller')
+PHASES = ('baseline', 'prepare_fault', 'fault', 'recover_transition', 'recovered',
+          'prepare_rollback_fault', 'rollback_fault', 'rollback_transition', 'rollback', 'stop')
 
 
 def require(condition, message):
@@ -171,18 +174,24 @@ def assess(samples, routes, phases, bind_failure):
         return 'FAIL'
     if not bind_failure or not samples or not phases or len({s.get('nonce') for s in samples}) != len(samples):
         return 'UNKNOWN'
+    if any(b['mono'] - a['mono'] > 3 or b['mono'] < a['mono'] for a, b in zip(samples, samples[1:])):
+        return 'UNKNOWN'
+    for sample in samples:
+        expected = phases.get(sample.get('phase'))
+        if expected is None or not routes.get(sample.get('nonce')):
+            return 'UNKNOWN'
+        allowed = set(expected.get('revisions', [expected.get('revision')]))
+        actual = routes[sample['nonce']]
+        if len(actual) != 1 or not actual <= allowed:
+            return 'FAIL'
     for phase, expected in phases.items():
         records = [s for s in samples if s.get('phase') == phase]
         if len(records) < 2 or records[-1]['mono'] - records[0]['mono'] < expected['seconds']:
             return 'UNKNOWN'
         if any(b['mono'] - a['mono'] > 3 or b['mono'] < a['mono'] for a, b in zip(records, records[1:])):
             return 'UNKNOWN'
-        for sample in records:
-            actual = routes.get(sample['nonce'])
-            if not actual:
-                return 'UNKNOWN'
-            if actual != {expected['revision']}:
-                return 'FAIL'
+        if expected['seconds'] > 0 and {s.get('version') for s in records} != {1, 2}:
+            return 'UNKNOWN'
     return 'PASS'
 
 
@@ -302,8 +311,7 @@ class Cloud:
         return bounded(['script', '-q', '-e', '-c', shlex.join(az), '/dev/null'], 90)
 
     def control(self, app, revision, replica, action):
-        require(action in ('state', 'release') or action in ('phase-'+p for p in
-                ('baseline', 'transition', 'fault', 'recovered', 'rollback_fault', 'rollback', 'stop')), 'Unexpected control')
+        require(action in ('state', 'release') or action in ('phase-'+p for p in PHASES), 'Unexpected control')
         nonce = secrets.token_hex(8)
         output = self.console(app, revision, replica, '/fixture client '+action+' '+nonce)
         return console_result(0, output, nonce)
@@ -427,8 +435,11 @@ def resolve_release(ctx, folder):
 def build_helper(ctx, folder):
     validate_approval(ctx, os.environ)
     tag = 'alive/bible-readiness-fixture:isolation-'+ctx.run
+    require(all(row['name'] != 'isolation-'+ctx.run for row in helper_tags()),
+            'Helper tag already exists; refuse overwrite')
     bounded(['az', 'acr', 'build', '--registry', 'alive', '--image', tag,
              '--file', 'scripts/aca-readiness-isolation/Dockerfile', '--build-arg', 'FIXTURE_RUN='+ctx.run,
+             '--build-arg', 'FIXTURE_SOURCE='+ctx.source,
              '--no-logs', '--only-show-errors', '.'], 900)
     record = json.loads(bounded(['az', 'acr', 'repository', 'show', '--name', 'alive', '--image', tag,
                                 '--output', 'json', '--only-show-errors']))
@@ -437,48 +448,123 @@ def build_helper(ctx, folder):
     export(HELPER_IMAGE_REF=image)
 
 
+def helper_tags():
+    repository = 'alive/bible-readiness-fixture'
+    repos = json.loads(bounded(['az', 'acr', 'repository', 'list', '--name', 'alive', '--output', 'json', '--only-show-errors']))
+    if repository not in repos:
+        return []
+    return json.loads(bounded(['az', 'acr', 'repository', 'show-tags', '--name', 'alive', '--repository',
+                               repository, '--detail', '--output', 'json', '--only-show-errors']))
+
+
+def helper_labels(sha):
+    immutable('alive.azurecr.io/alive/bible-readiness-fixture@'+sha, 'bible-readiness-fixture')
+    # Credentials stay in memory; refuse redirects rather than forward registry authorization.
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    opener = urllib.request.build_opener(NoRedirect())
+    def read(request):
+        try:
+            with opener.open(request, timeout=30) as response:
+                raw = response.read(1_000_001)
+        except (urllib.error.URLError, OSError) as exc:
+            raise RuntimeError('Helper ownership read unavailable; retain artifact') from exc
+        require(len(raw) <= 1_000_000, 'Helper ownership response too large')
+        return raw
+    login = json.loads(bounded(['az', 'acr', 'login', '--name', 'alive', '--expose-token', '--output', 'json', '--only-show-errors']))
+    form = urllib.parse.urlencode({'grant_type': 'refresh_token', 'service': 'alive.azurecr.io',
+            'scope': 'repository:alive/bible-readiness-fixture:pull', 'refresh_token': login['accessToken']}).encode()
+    token = json.loads(read(urllib.request.Request('https://alive.azurecr.io/oauth2/token', data=form,
+                      headers={'Content-Type': 'application/x-www-form-urlencoded'})))['access_token']
+    def content(kind, value):
+        require(re.fullmatch(r'sha256:[0-9a-f]{64}', value) is not None, 'Invalid helper content digest')
+        raw = read(urllib.request.Request('https://alive.azurecr.io/v2/alive/bible-readiness-fixture/'+kind+'/'+value,
+                headers={'Authorization': 'Bearer '+token, 'Accept': 'application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'}))
+        require('sha256:'+hashlib.sha256(raw).hexdigest() == value, 'Helper ownership content digest mismatch')
+        return json.loads(raw)
+    manifest = content('manifests', sha)
+    return content('blobs', manifest['config']['digest'])['config'].get('Labels') or {}
+
+
 def cleanup_helper(ctx, folder):
     cloud = Cloud(ctx)
     require(all(cloud.get(resource) is None for resource in (ctx.group_id,ctx.infrastructure_id,ctx.role_id)),
             'Resources still exist; retain their helper image')
     repository, tag = 'alive/bible-readiness-fixture', 'isolation-'+ctx.run
-    def tags():
-        repos = json.loads(bounded(['az', 'acr', 'repository', 'list', '--name', 'alive', '--output', 'json', '--only-show-errors']))
-        if repository not in repos:
-            return []
-        return json.loads(bounded(['az', 'acr', 'repository', 'show-tags', '--name', 'alive', '--repository',
-                                   repository, '--detail', '--output', 'json', '--only-show-errors']))
-    rows = tags()
+    def record(value):
+        write_json(folder, 'cleanup-helper.json', value)
+        return value
+    rows = helper_tags()
     own = [row for row in rows if row['name'] == tag]
     if not own:
-        write_json(folder, 'cleanup-helper.json', {'ownedTagAbsent': True, 'unreferencedManifestsNotPurged': True})
-        return
+        return record({'ownedTagAbsent': True, 'unreferencedManifestsNotPurged': True})
     require(len(own) == 1, 'Ambiguous helper image tag')
     sha = own[0]['digest']
     immutable('alive.azurecr.io/'+repository+'@'+sha, 'bible-readiness-fixture')
+    labels = helper_labels(sha)
+    require(labels.get('hhc.isolation.run') == ctx.run and labels.get('org.opencontainers.image.revision') == ctx.source,
+            'Helper immutable ownership differs; retain artifact')
+    rows = helper_tags()
+    require([row for row in rows if row['name'] == tag] == own, 'Helper tag changed; retain artifact')
     if any(row['digest'] == sha and row['name'] != tag for row in rows):
-        write_json(folder, 'cleanup-helper.json', {'retainedDigest': sha, 'reason': 'other tags exist; no broad purge'})
-        return
+        return record({'retainedDigest': sha, 'reason': 'other tags exist; no broad purge'})
     bounded(['az', 'acr', 'repository', 'delete', '--name', 'alive', '--image', repository+'@'+sha,
              '--yes', '--only-show-errors'])
-    rows = tags()
+    rows = helper_tags()
     require(all(row['name'] != tag for row in rows), 'Helper deletion not confirmed')
-    write_json(folder, 'cleanup-helper.json', {'deletedDigest': sha, 'run': ctx.run})
+    return record({'deletedDigest': sha, 'run': ctx.run, 'source': ctx.source})
 
 
-def runtime_inventory(ctx, cloud, folder, name, allowed=None):
+def cleanup_attempts(env, folder, helper=False):
+    Context(env)
+    results = {}
+    for attempt in range(1, int(env['GITHUB_RUN_ATTEMPT'])+1):
+        ctx = Context(dict(env, GITHUB_RUN_ATTEMPT=str(attempt)))
+        evidence = folder/('attempt-'+str(attempt))
+        evidence.mkdir(parents=True, exist_ok=True)
+        try:
+            if helper:
+                results[ctx.run] = cleanup_helper(ctx, evidence)
+            else:
+                cloud = Cloud(ctx)
+                cleanup(ctx, cloud)
+                wait_for(lambda: cloud.get(ctx.infrastructure_id) is None, 300, 'platform infrastructure group deletion')
+                results[ctx.run] = {'verifiedAbsent': True}
+        except (ValueError, RuntimeError, KeyError, subprocess.TimeoutExpired):
+            # Attempt every deterministic prior allocation even when one needs manual exact cleanup.
+            results[ctx.run] = {'result': 'UNKNOWN'}
+    complete = all(value.get('result') != 'UNKNOWN' for value in results.values())
+    write_json(folder, 'cleanup-helper.json' if helper else 'cleanup.json',
+               {'attempts': results, 'verifiedAbsent': complete and not helper, 'result': 'PASS' if complete else 'UNKNOWN'})
+    require(complete, 'Cleanup incomplete in at least one run attempt; inspect exact residuals')
+
+
+def runtime_inventory(ctx, cloud, folder, name, allowed):
     current = cloud.get(ctx.app_id('bible-ready-target'))['properties']
     rows = cloud.cli('containerapp', 'revision', 'list', '-g', ctx.group, '-n', 'bible-ready-target', '--all')
+    require(all(type(r['properties'].get('replicas')) is int and 0 <= r['properties']['replicas'] <= 1 for r in rows),
+            'Unexpected or unknown replica count; acceptance UNKNOWN')
     live = {r['name'] for r in rows if r['properties'].get('active') is True or
             r['properties'].get('replicas', 0) > 0 or r['properties'].get('runningState') not in ('Stopped', 'Inactive', 'ScaleTo0')}
-    require(len(live) <= 3 and (allowed is None or live <= allowed), 'Unknown or excessive live revision overlap')
+    require(len(live) <= 3 and live <= allowed, 'Unknown or excessive live revision overlap')
     write_json(folder, 'inventory-'+name+'.json', {'latest': current['latestRevisionName'],
         'latestReady': current['latestReadyRevisionName'], 'revisions': [
          {'name': r['name'], **{key: r['properties'].get(key) for key in ('active', 'replicas', 'healthState', 'runningState')},
           'images': [c['image'] for c in r['properties']['template']['containers']],
           'probes': [c.get('probes', []) for c in r['properties']['template']['containers']],
           'scale': r['properties']['template']['scale']} for r in rows]})
-    return live
+    return rows
+
+
+def validate_streams(streams, rows):
+    inventory = {r['name']: r['properties'] for r in rows}
+    for process, revision in streams:
+        if process.poll() is not None:
+            state = inventory.get(revision, {})
+            require(state.get('active') is False and state.get('replicas') == 0 and
+                    state.get('runningState') in ('Stopped', 'Inactive', 'ScaleTo0'),
+                    'Active or unknown revision log stream stopped; evidence UNKNOWN')
 
 
 def provision(ctx, cloud, manifests, folder):
@@ -516,7 +602,7 @@ def run_acceptance(ctx, cloud, manifests, folder):
     require(pg_sql(ctx, cloud, pg_revision, pg_replica, seed).get('history') == 6, 'Unexpected actual migration history')
     cloud.put(ctx.app_id('bible-ready-caller'), manifests['caller'])
     caller, caller_replica = ready_revision(ctx, cloud, 'bible-ready-caller', 'baseline',images['caller'])
-    processes, handles, threads, log_files = [], [], [], []
+    processes, handles, threads, log_files, streams = [], [], [], [], []
 
     def logs(revision, replica, container):
         path = folder/(revision+'-'+container+'.log')
@@ -534,6 +620,7 @@ def run_acceptance(ctx, cloud, manifests, folder):
         thread = threading.Thread(target=collect, daemon=True)
         thread.start(); threads.append(thread)
         processes.append(process)
+        streams.append((process, revision))
         if container == 'bible-api':
             log_files.append((path, revision))
         return path
@@ -541,31 +628,36 @@ def run_acceptance(ctx, cloud, manifests, folder):
     def control(revision, replica, action):
         return cloud.control('bible-ready-target', revision, replica, action)
 
-    def phase(name, seconds):
-        runtime_inventory(ctx, cloud, folder, name+'-start')
+    def inventory(name, allowed):
+        rows = runtime_inventory(ctx, cloud, folder, name, allowed)
+        validate_streams(streams, rows)
+        require(all(h.tell() < 20_000_000 for h in handles), 'Log evidence limit exceeded')
+
+    def phase(name, seconds, allowed):
+        inventory(name+'-start', allowed)
         cloud.control('bible-ready-caller', caller, caller_replica, 'phase-'+name)
         time.sleep(seconds+3)
-        require(all(p.poll() is None for p in processes), 'Log stream stopped; evidence UNKNOWN')
-        require(all(h.tell() < 20_000_000 for h in handles), 'Log evidence limit exceeded')
-        runtime_inventory(ctx, cloud, folder, name+'-end')
+        inventory(name+'-end', allowed)
 
     expected = {}
     fatal_paths = []
     history = {}
     try:
         logs(baseline, baseline_replica, 'bible-api')
-        phase('baseline', 60)
+        phase('baseline', 60, {baseline})
         expected['baseline'] = {'seconds': 60, 'revision': baseline}
         require(pg_sql(ctx, cloud, pg_revision, pg_replica,
                 "SELECT json_build_object('count',count(*)) FROM pg_stat_activity WHERE application_name='isolation_baseline';")['count'] > 0,
                 'PG application_name attribution unavailable')
         for suffix, fault_phase, serving, recovered_phase in [
                 ('fault', 'fault', baseline, 'recovered'), ('fault-two', 'rollback_fault', 'bible-ready-target--fault', 'rollback')]:
-            cloud.control('bible-ready-caller', caller, caller_replica, 'phase-transition')
+            prepare_phase = 'prepare_fault' if suffix == 'fault' else 'prepare_rollback_fault'
+            cloud.control('bible-ready-caller', caller, caller_replica, 'phase-'+prepare_phase)
+            expected[prepare_phase] = {'seconds': 0, 'revision': serving}
             current = cloud.get(ctx.app_id('bible-ready-target'))['properties']
             require(current['latestRevisionName'] == current['latestReadyRevisionName'] == serving,
                     'Another revision superseded the serving baseline')
-            runtime_inventory(ctx, cloud, folder, suffix+'-preflight', {serving})
+            inventory(suffix+'-preflight', {serving})
             target = manifests['target']
             target['properties']['template']['revisionSuffix'] = suffix
             containers = target['properties']['template']['containers']
@@ -585,12 +677,15 @@ def run_acceptance(ctx, cloud, manifests, folder):
             require(cloud.get(ctx.app_id('bible-ready-target'))['properties']['latestReadyRevisionName'] == serving,
                     'Old revision lost authority before fault window')
             control(candidate, replica, 'phase-'+fault_phase)
-            phase(fault_phase, 600)
+            phase(fault_phase, 600, {serving, candidate})
             state = control(candidate, replica, 'state')
             history[fault_phase] = state
             require(fault_window(state.get('observations') or [], fault_phase, 600), 'Fault window not proven; UNKNOWN')
             expected[fault_phase] = {'seconds': 600, 'revision': serving}
-            cloud.control('bible-ready-caller', caller, caller_replica, 'phase-transition')
+            transition = 'recover_transition' if suffix == 'fault' else 'rollback_transition'
+            recovered = candidate if suffix == 'fault' else 'bible-ready-target--restore'
+            expected[transition] = {'seconds': 0, 'revisions': [serving, recovered]}
+            cloud.control('bible-ready-caller', caller, caller_replica, 'phase-'+transition)
             if suffix == 'fault':
                 control(candidate, replica, 'release')
                 ready_revision(ctx, cloud, 'bible-ready-target', suffix,images['target'])
@@ -599,7 +694,7 @@ def run_acceptance(ctx, cloud, manifests, folder):
                 current = cloud.get(ctx.app_id('bible-ready-target'))['properties']
                 require(current['latestRevisionName'] == candidate and current['latestReadyRevisionName'] == serving,
                         'Rollback no longer owns candidate')
-                runtime_inventory(ctx, cloud, folder, 'rollback-preflight', {serving, candidate})
+                inventory('rollback-preflight', {serving, candidate})
                 cloud.cli('containerapp', 'revision', 'copy', '-g', ctx.group, '-n', 'bible-ready-target',
                           '--from-revision', baseline, '--revision-suffix', 'restore')
                 recovered, restore_replica = ready_revision(ctx, cloud, 'bible-ready-target', 'restore',images['target'])
@@ -608,13 +703,14 @@ def run_acceptance(ctx, cloud, manifests, folder):
                 restored = cloud.cli('containerapp', 'revision', 'show', '-g', ctx.group, '-n', 'bible-ready-target', '--revision', recovered)['properties']['template']
                 original.pop('revisionSuffix', None); restored.pop('revisionSuffix', None)
                 require(original == restored, 'Rollback original template/digest mismatch')
-            phase(recovered_phase, 60)
+            phase(recovered_phase, 60, {serving, candidate, recovered})
             expected[recovered_phase] = {'seconds': 60, 'revision': recovered}
             old_name = 'isolation_baseline' if suffix == 'fault' else 'isolation_fault'
             wait_for(lambda: pg_sql(ctx, cloud, pg_revision, pg_replica,
                      "SELECT json_build_object('count',count(*)) FROM pg_stat_activity WHERE application_name='"+old_name+"';")['count'] == 0,
                      120, 'old process connection release')
         cloud.control('bible-ready-caller', caller, caller_replica, 'phase-stop')
+        inventory('complete', {recovered})
         samples = cloud.control('bible-ready-caller', caller, caller_replica, 'state')
         require(not samples.get('problem'), 'Caller evidence incomplete')
         write_json(folder, 'caller.json', samples)
@@ -630,8 +726,8 @@ def run_acceptance(ctx, cloud, manifests, folder):
         require(not any(thread.is_alive() for thread in threads), 'Log collector did not close')
         for h in handles:
             h.close()
-        write_json(folder, 'log-stream-status.json', {'stoppedEarly': stopped_early})
-    require(not stopped_early, 'Log stream continuity UNKNOWN')
+        write_json(folder, 'log-stream-status.json', {'stoppedEarly': stopped_early,
+                   'retiredStreamPolicy': 'only confirmed inactive zero-replica stopped revisions may close'})
     bind = len(fatal_paths) == 2 and all(bind_fatal(p) for p in fatal_paths)
     result = assess(samples.get('samples') or [], nonce_routes(log_files), expected, bind)
     write_json(folder, 'acceptance.json', {'result': result, 'phases': expected, 'actualManagedBindFailure': bind})
@@ -663,12 +759,10 @@ def main():
         build_helper(ctx, folder)
         return
     if sys.argv[1] == 'cleanup-helper':
-        cleanup_helper(ctx, folder)
+        cleanup_attempts(os.environ, folder, helper=True)
         return
     if sys.argv[1] == 'cleanup':
-        cleanup(ctx, cloud)
-        wait_for(lambda: cloud.get(ctx.infrastructure_id) is None, 300, 'platform infrastructure group deletion')
-        write_json(folder, 'cleanup.json', {'deletedRun': ctx.run, 'verifiedAbsent': True})
+        cleanup_attempts(os.environ, folder)
         return
     manifests = plan(ctx, os.environ['BIBLE_IMAGE_REF'], os.environ['HELPER_IMAGE_REF'])
     write_json(folder, 'preview.json', manifests)

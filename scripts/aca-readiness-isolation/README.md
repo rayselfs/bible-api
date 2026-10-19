@@ -94,8 +94,9 @@ failure or a missing continuous600second observation window is UNKNOWN.
 There is no wrong-port fallback, privileged container or host access.
 
 The caller continuously requests v1/v2 versions with unique synthetic nonce
-queries and validates the single sentinel record. It records status, hash,
-monotonic time and phase. Phase acknowledgements wait for the preceding request
+queries and validates the single sentinel record. It records version, status, hash,
+monotonic time and phase. Both versions must appear in each measured window.
+Phase acknowledgements wait for the preceding request
 to finish. Exact revision/replica/container log streams associate each nonce
 with the serving revision; 200 without that association is insufficient.
 Missing logs/403/429/management failure/cadence gaps are UNKNOWN; observed
@@ -103,25 +104,45 @@ HTTP/JSON failures or wrong-revision routing are FAIL.
 
 Windows: baseline60s, failed candidate600s, recovered60s, another failed
 candidate600s, restored original-template60s. Requests continue through
-transitions. The final rollback copies the original idle-helper template,
+transitions. Preparation and handoff have separate phase identities: preparation
+allows only the old serving revision; recovery/rollback allow only their exact
+old/new pair. Every sample, including transitions, needs one nonce/revision
+association and the global cadence check; an unrecognized phase is UNKNOWN.
+The final rollback copies the original idle-helper template,
 not the dynamically released hold-helper revision. Template/digest equality,
 inventory including inactive-but-running revisions, at most three revision
 groups and actual old PG application_name connections returning to zero are
-checked. An unexpected additional replica stops this one-replica acceptance;
+checked. Every window boundary checks an explicit live revision allowlist and
+known zero/one replica counts, including inactive revisions. An unexpected
+additional replica stops this one-replica acceptance;
 it is not peak/soak or max3 load certification.
+Log streams may close only after the exact revision is confirmed inactive,
+stopped and at zero replicas; loss of an active or unknown stream is UNKNOWN.
+All requests still require captured nonce evidence after a legitimate retirement.
 
 ## Cleanup and remaining live gate
 
-Cleanup reconstructs exact IDs from the trusted workflow run/attempt even if
-no artifact survived. It verifies owner/run/source/expiry tags, matches the
+Cleanup reconstructs exact IDs for every attempt from one through the current
+trusted workflow run attempt, even if no artifact survived. A cleanup-only
+rerun therefore checks the original creating attempt too. Each attempt is
+checked separately; a foreign or failed allocation prevents an aggregate clean
+result while other attempts are still checked. It verifies owner/run/source/expiry tags, matches the
 registry role to the new environment principal, removes only that role, then
 deletes the exact owned RG and confirms both it and the declared platform
 infrastructure RG are absent. It refuses foreign groups/roles or an orphan
 role whose principal cannot be attested. Residual infrastructure is reported
 for exact follow-up, never wildcard-deleted or declared clean.
 
-Helper images use a run-specific label/tag/digest. Cleanup deletes that digest
+Helper builds refuse an existing run-specific tag. Cleanup verifies the actual
+immutable manifest/config SHA256 and both run/source labels before deletion,
+then rechecks the tag/digest and exclusive tag reference. It deletes that digest
 only when no other tag shares it; otherwise it records retained storage.
+Missing or foreign ownership is UNKNOWN and retains the image. Registry pull
+tokens stay in memory; redirects are refused rather than forwarding credentials.
+The bounded reader supports a direct image manifest; unsupported image indexes
+or registry redirect behavior retain the artifact for exact follow-up.
+The reader follows the [ACR OAuth contract](https://github.com/Azure/acr/blob/main/docs/AAD-OAuth.md)
+and [OCI manifest/blob digest contract](https://github.com/opencontainers/distribution-spec/blob/main/spec.md).
 Cancelled remote ACR builds, lost runners, unavailable role reads or an
 unscheduled cleanup job still require the coordinator's expiry/inventory
 check. Tags are not automatic TTL deletion and actual charges continue until

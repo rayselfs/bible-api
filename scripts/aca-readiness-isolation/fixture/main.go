@@ -24,12 +24,13 @@ var client = &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{P
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 type sample struct {
-	Phase  string  `json:"phase"`
-	Mono   float64 `json:"mono"`
-	Nonce  string  `json:"nonce"`
-	Status int     `json:"status"`
-	Valid  bool    `json:"valid"`
-	Hash   string  `json:"hash"`
+	Phase   string  `json:"phase"`
+	Mono    float64 `json:"mono"`
+	Nonce   string  `json:"nonce"`
+	Status  int     `json:"status"`
+	Version int     `json:"version"`
+	Valid   bool    `json:"valid"`
+	Hash    string  `json:"hash"`
 }
 type observation struct {
 	Phase    string  `json:"phase"`
@@ -120,7 +121,7 @@ func (f *fixture) sample(base, phase string, version int) sample {
 	f.sequence++
 	nonce := "iso-" + f.run + "-" + strconv.Itoa(f.sequence)
 	f.mu.Unlock()
-	s := sample{Phase: phase, Mono: time.Since(f.started).Seconds(), Nonce: nonce}
+	s := sample{Phase: phase, Mono: time.Since(f.started).Seconds(), Nonce: nonce, Version: version}
 	path := fmt.Sprintf("/v1.0/invoke/bible-ready-target/method/api/bible/v%d/versions?isolation_nonce=%s", version, nonce)
 	resp, err := client.Get(base + path)
 	if err != nil {
@@ -241,7 +242,7 @@ func (f *fixture) handler() http.Handler {
 			}
 			phase := strings.TrimPrefix(r.URL.Path, "/phase/")
 			switch phase {
-			case "baseline", "transition", "fault", "recovered", "rollback_fault", "rollback", "stop":
+			case "baseline", "prepare_fault", "fault", "recover_transition", "recovered", "prepare_rollback_fault", "rollback_fault", "rollback_transition", "rollback", "stop":
 			default:
 				w.WriteHeader(400)
 				return

@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 import unittest
+import tempfile
+from unittest.mock import patch
 
 ROOT = Path(__file__).parent
 spec = importlib.util.spec_from_file_location('isolation', ROOT / 'isolation.py')
@@ -75,7 +77,7 @@ class IsolationTests(unittest.TestCase):
 
     def test_assessment_demands_complete_nonce_revision_cadence_and_true_fault(self):
         samples = [dict(phase='fault', mono=i, nonce=f'iso-123-1-{i}', status=200,
-                        valid=True) for i in range(602)]
+                        valid=True, version=1+i%2) for i in range(602)]
         routes = {s['nonce']: {'old'} for s in samples}
         phases = {'fault': dict(seconds=600, revision='old')}
         self.assertEqual(self.m.assess(samples, routes, phases, True), 'PASS')
@@ -217,6 +219,132 @@ class IsolationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.m.cleanup_helper(self.ctx,Path(folder))
             self.assertEqual(external.call_count,0)
+
+    def test_all_transition_samples_need_nonce_revision_and_global_cadence(self):
+        samples = [dict(phase='baseline', mono=i, nonce=str(i), status=200, valid=True, version=1+i%2) for i in range(3)]
+        samples += [dict(phase='recover_transition', mono=i, nonce=str(i), status=200, valid=True, version=1+i%2) for i in range(3, 6)]
+        phases = {'baseline': dict(seconds=1, revision='old'),
+                  'recover_transition': dict(seconds=0, revisions=['old', 'new'])}
+        routes = {s['nonce']: {'old'} for s in samples}
+        self.assertEqual(self.m.assess(samples, routes, phases, True), 'PASS')
+        for nonce, actual, result in [('4', None, 'UNKNOWN'), ('4', {'stray'}, 'FAIL'), ('4', {'old', 'new'}, 'FAIL')]:
+            with self.subTest(actual=actual):
+                changed = dict(routes, **{nonce: actual})
+                self.assertEqual(self.m.assess(samples, changed, phases, True), result)
+        # A gap between otherwise complete windows is also missing evidence.
+        gap = copy.deepcopy(samples)
+        for s in gap[3:]:
+            s['mono'] += 10
+        self.assertEqual(self.m.assess(gap, routes, phases, True), 'UNKNOWN')
+        unknown = samples + [dict(samples[-1], phase='transition', nonce='extra', mono=6)]
+        self.assertEqual(self.m.assess(unknown, dict(routes, extra={'stray'}), phases, True), 'UNKNOWN')
+
+    def test_cleanup_rerun_checks_previous_attempt_and_never_reports_foreign_clean(self):
+        first, second = FakeCloud(self.ctx), FakeCloud(self.m.Context(dict(self.env, GITHUB_RUN_ATTEMPT='2')))
+        second.group, second.role = None, None
+        clouds = {'123-1': first, '123-2': second}
+        env = dict(self.env, GITHUB_RUN_ATTEMPT='2')
+        with tempfile.TemporaryDirectory() as folder, patch.object(self.m, 'Cloud', side_effect=lambda ctx: clouds[ctx.run]):
+            self.m.cleanup_attempts(env, Path(folder))
+            self.assertEqual(first.deleted, [self.ctx.role_id, self.ctx.group_id])
+            result = json.loads((Path(folder)/'cleanup.json').read_text())
+            self.assertTrue(result['verifiedAbsent'])
+            self.assertEqual(set(result['attempts']), {'123-1', '123-2'})
+        first = FakeCloud(self.ctx)
+        first.group['tags']['hhc-source'] = 'f'*40
+        clouds['123-1'] = first
+        with tempfile.TemporaryDirectory() as folder, patch.object(self.m, 'Cloud', side_effect=lambda ctx: clouds[ctx.run]):
+            with self.assertRaises(ValueError):
+                self.m.cleanup_attempts(env, Path(folder))
+            self.assertFalse(json.loads((Path(folder)/'cleanup.json').read_text())['verifiedAbsent'])
+            self.assertEqual(first.deleted, [])
+
+    def test_helper_cleanup_rerun_includes_creating_attempt(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(self.m, 'cleanup_helper', return_value={'ownedTagAbsent': True}) as clean:
+            self.m.cleanup_attempts(dict(self.env, GITHUB_RUN_ATTEMPT='2'), Path(folder), helper=True)
+            self.assertEqual([call.args[0].run for call in clean.call_args_list], ['123-1', '123-2'])
+
+    def test_existing_helper_tag_refuses_build_before_any_write(self):
+        rows = [{'name': 'isolation-123-1', 'digest': 'sha256:'+'c'*64}]
+        with tempfile.TemporaryDirectory() as folder, patch.object(self.m, 'validate_approval'), \
+                patch.object(self.m, 'helper_tags', return_value=rows), patch.object(self.m, 'bounded') as external:
+            with self.assertRaises(ValueError):
+                self.m.build_helper(self.ctx, Path(folder))
+            external.assert_not_called()
+
+    def test_helper_delete_demands_immutable_run_and_source_labels_and_exclusive_tag(self):
+        cloud = FakeCloud(self.ctx)
+        cloud.group, cloud.role = None, None
+        sha = 'sha256:'+'c'*64
+        row = {'name': 'isolation-123-1', 'digest': sha}
+        own = {'hhc.isolation.run': self.ctx.run, 'org.opencontainers.image.revision': self.ctx.source}
+        for labels in [{}, dict(own, **{'hhc.isolation.run': 'other'}), dict(own, **{'org.opencontainers.image.revision': 'f'*40})]:
+            with self.subTest(labels=labels), tempfile.TemporaryDirectory() as folder, \
+                    patch.object(self.m, 'Cloud', return_value=cloud), patch.object(self.m, 'helper_tags', return_value=[row]), \
+                    patch.object(self.m, 'helper_labels', return_value=labels), patch.object(self.m, 'bounded') as external:
+                with self.assertRaises(ValueError):
+                    self.m.cleanup_helper(self.ctx, Path(folder))
+                external.assert_not_called()
+        with tempfile.TemporaryDirectory() as folder, patch.object(self.m, 'Cloud', return_value=cloud), \
+                patch.object(self.m, 'helper_tags', return_value=[row, dict(row, name='shared')]), \
+                patch.object(self.m, 'helper_labels', return_value=own), patch.object(self.m, 'bounded') as external:
+            result = self.m.cleanup_helper(self.ctx, Path(folder))
+            self.assertEqual(result['retainedDigest'], sha)
+            external.assert_not_called()
+        with tempfile.TemporaryDirectory() as folder, patch.object(self.m, 'Cloud', return_value=cloud), \
+                patch.object(self.m, 'helper_tags', side_effect=[[row], [row], []]), \
+                patch.object(self.m, 'helper_labels', return_value=own), patch.object(self.m, 'bounded', return_value='') as external:
+            result = self.m.cleanup_helper(self.ctx, Path(folder))
+            self.assertEqual(result['deletedDigest'], sha)
+            self.assertIn('alive/bible-readiness-fixture@'+sha, external.call_args.args[0])
+
+    def test_inventory_rejects_replica_growth_or_stray_during_measured_phase(self):
+        cloud = FakeCloud(self.ctx)
+        cloud.get = lambda resource: {'properties': {'latestRevisionName': 'old', 'latestReadyRevisionName': 'old'}}
+        for rows in [[{'name': 'old', 'properties': {'active': True, 'replicas': 3, 'runningState': 'Running'}}],
+                     [{'name': 'stray', 'properties': {'active': False, 'replicas': 1, 'runningState': 'Running'}}],
+                     [{'name': 'old', 'properties': {'active': True, 'runningState': 'Running'}}]]:
+            for row in rows:
+                row['properties']['template'] = {'containers': [], 'scale': {'minReplicas': 1, 'maxReplicas': 3}}
+            cloud.cli = lambda *args: rows
+            with self.subTest(rows=rows), tempfile.TemporaryDirectory() as folder, self.assertRaises(ValueError):
+                self.m.runtime_inventory(self.ctx, cloud, Path(folder), 'rollback-end', {'old'})
+
+    def test_only_confirmed_retired_revision_can_close_log_stream(self):
+        stopped = type('Stopped', (), {'poll': lambda self: 0})()
+        rows = [{'name': 'old', 'properties': {'active': False, 'replicas': 0, 'runningState': 'Stopped'}}]
+        self.m.validate_streams([(stopped, 'old')], rows)
+        for properties in [dict(active=True, replicas=1, runningState='Running'),
+                           dict(active=False, replicas=1, runningState='Running'),
+                           dict(active=False, runningState='Stopped')]:
+            with self.subTest(properties=properties), self.assertRaises(ValueError):
+                self.m.validate_streams([(stopped, 'old')], [{'name': 'old', 'properties': properties}])
+        with self.assertRaises(ValueError):
+            self.m.validate_streams([(stopped, 'old')], [])
+
+    def test_helper_labels_verifies_content_hashes_and_never_follows_redirects(self):
+        import hashlib
+        import io
+        config = json.dumps({'config': {'Labels': {'hhc.isolation.run': self.ctx.run,
+                              'org.opencontainers.image.revision': self.ctx.source}}}).encode()
+        config_sha = 'sha256:'+hashlib.sha256(config).hexdigest()
+        manifest = json.dumps({'config': {'digest': config_sha}}).encode()
+        sha = 'sha256:'+hashlib.sha256(manifest).hexdigest()
+        for blob, valid in [(config, True), (b'foreign config', False)]:
+            opener = __import__('unittest.mock', fromlist=['Mock']).Mock()
+            opener.open.side_effect = [io.BytesIO(b'{"access_token":"fake-pull-token"}'), io.BytesIO(manifest), io.BytesIO(blob)]
+            with self.subTest(valid=valid), patch.object(self.m, 'bounded', return_value='{"accessToken":"fake-refresh-token"}'), \
+                    patch.object(self.m.urllib.request, 'build_opener', return_value=opener) as build:
+                if valid:
+                    self.assertEqual(self.m.helper_labels(sha)['hhc.isolation.run'], self.ctx.run)
+                else:
+                    with self.assertRaises(ValueError):
+                        self.m.helper_labels(sha)
+                handler = build.call_args.args[0]
+                self.assertIsNone(handler.redirect_request(None, None, 307, '', {}, 'https://foreign.invalid'))
+                requests = [call.args[0] for call in opener.open.call_args_list]
+                self.assertTrue(all(request.full_url.startswith('https://alive.azurecr.io/') for request in requests))
+                self.assertIn(config_sha, requests[-1].full_url)
 
 
 class FakeCloud:
