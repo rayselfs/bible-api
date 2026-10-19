@@ -42,7 +42,15 @@ elif args[:2]==['containerapp','update']:
     (p/'updated').touch();result=data['updated_app']
 elif key=='containerapp revision copy':
     (p/'copied').touch();result=data['copied_app']
-elif key=='containerapp revision list':result=list(data['revisions'].values())
+    source=args[args.index('--from-revision')+1]
+    name=result['properties']['latestRevisionName']
+    revision=json.loads(json.dumps(data['revisions'][source]));revision['name']=name
+    revision['properties']['template']['containers'][0]['image']=args[args.index('--image')+1]
+    if data.get('corrupt_copy_probe'):revision['properties']['template']['containers'][0]['probes'][0]['httpGet']['path']='/ready'
+    data['revisions'][name]=revision
+    data['app']['properties'].update(latestRevisionName=name,latestReadyRevisionName=name)
+    (p/'azure.json').write_text(json.dumps(data))
+elif key=='containerapp revision list':result=[r for r in data['revisions'].values() if '--all' in args or r['properties']['active']]
 elif key=='acr repository show':result=data['registry']
 else:sys.exit('unexpected az command: '+repr(args))
 if result=='DENIED':sys.exit(23)
@@ -75,6 +83,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout+proc.stderr)
         else:
             self.assertNotEqual(proc.returncode, 0, proc.stdout+proc.stderr)
+        self.data=json.loads((self.path/'azure.json').read_text())
         if (self.path/'github-env').exists():
             for line in (self.path/'github-env').read_text().splitlines():
                 key,value=line.split('=',1);self.env[key]=value
@@ -111,7 +120,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
 
     def test_wait_does_not_accept_old_ready_or_unready_sidecar(self):
         self.run_cli('capture')
-        name='bible-api--new'
+        name='bible-api--release-123-1'
         self.candidate(name,NEW_IMAGE)
         self.env['CANDIDATE_REVISION']=name
         sys.dont_write_bytecode=True
@@ -144,7 +153,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
 
     def test_update_pins_candidate_then_waits_for_exact_identity(self):
         self.run_cli('capture')
-        name='bible-api--new'
+        name='bible-api--release-123-1'
         self.data['updated_app']={'properties':{'latestRevisionName':name}}
         self.run_cli('update')
         self.assertEqual(self.env['CANDIDATE_REVISION'],name)
@@ -158,18 +167,54 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.data['app']='DENIED'
         self.run_cli('wait',False)
 
-    def test_rollback_copies_original_template_and_checks_result(self):
+    def prepare_updated_candidate(self):
         self.run_cli('capture')
-        name='bible-api--rollback-123-1'
-        self.data['copied_app']={'properties':{'latestRevisionName':name}}
-        self.candidate(name,IMAGE)
+        name='bible-api--release-123-1'
+        self.data['updated_app']={'properties':{'latestRevisionName':name}}
+        self.run_cli('update')
+        self.candidate(name,NEW_IMAGE)
+        self.data['copied_app']={'properties':{'latestRevisionName':'bible-api--rollback-123-1'}}
+
+    def test_inactive_terminating_revision_blocks_capture(self):
+        orphan=json.loads(json.dumps(BASE));orphan['name']='bible-api--terminating'
+        orphan['properties'].update(active=False,replicas=1)
+        self.data['revisions'][orphan['name']]=orphan
+        self.run_cli('capture',False)
+
+    def test_preflight_rejection_does_not_copy_even_if_failure_handler_runs(self):
+        self.run_cli('capture')
+        self.data['jobs']=[{'name':'bible-import'}]
+        self.data['executions']=[{'properties':{'status':'Running'}}]
+        self.run_cli('update',False)
+        self.run_cli('rollback',False)
+        self.assertFalse((self.path/'updated').exists())
+        self.assertFalse((self.path/'copied').exists())
+
+    def test_rollback_refuses_superseding_run(self):
+        self.prepare_updated_candidate()
+        self.data['app']['properties']['latestRevisionName']='bible-api--another-run'
+        self.run_cli('rollback',False)
+        self.assertFalse((self.path/'copied').exists())
+
+    def test_rollback_refuses_import_started_after_update(self):
+        self.prepare_updated_candidate()
+        self.data['jobs']=[{'name':'bible-import'}]
+        self.data['executions']=[{'properties':{'status':'Running'}}]
+        self.run_cli('rollback',False)
+        self.assertFalse((self.path/'copied').exists())
+
+    def test_rollback_copies_original_template_and_checks_result(self):
+        self.prepare_updated_candidate()
         self.run_cli('rollback')
-        self.assertEqual(self.env['ROLLBACK_REVISION'],name)
+        self.assertEqual(self.env['ROLLBACK_REVISION'],'bible-api--rollback-123-1')
         calls=[json.loads(x) for x in (self.path/'calls').read_text().splitlines()]
         copy=next(x for x in calls if x[:3]==['containerapp','revision','copy'])
         self.assertEqual(copy[copy.index('--from-revision')+1],'bible-api--old')
         self.assertEqual(copy[copy.index('--image')+1],IMAGE)
-        self.data['revisions'][name]['properties']['template']['containers'][0]['probes'][0]['httpGet']['path']='/ready'
+
+    def test_rollback_rejects_corrupted_copy_template(self):
+        self.prepare_updated_candidate()
+        self.data['corrupt_copy_probe']=True
         self.run_cli('rollback',False)
 
 if __name__=='__main__':unittest.main()

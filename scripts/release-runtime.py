@@ -84,7 +84,7 @@ def exported(**values):
             output.write(f'{key}={value}\n')
 
 
-def check_budget(template, image):
+def check_budget(template, image, allowed_revisions):
     # A reviewed ceiling is necessary: observed active_connections is not a configured budget.
     review = json.loads(os.environ['BIBLE_RELEASE_REVIEW'])
     commit = review['baselineCommit']
@@ -119,11 +119,13 @@ def check_budget(template, image):
         require(all(e['properties']['status'] in ('Succeeded', 'Failed', 'Stopped') for e in executions),
                 'Import running or execution state unknown')
     # Count still-running inactive revisions too; active=false does not release a pool.
-    revisions = az('containerapp', 'revision', 'list', *target())
+    revisions = az('containerapp', 'revision', 'list', *target(), '--all')
     live = [r for r in revisions if r['properties'].get('active') is True or
             r['properties'].get('replicas', 0) > 0 or
             r['properties'].get('runningState') not in ('Stopped', 'Inactive', 'ScaleTo0')]
-    require(len(live) == 1, 'Another revision may still hold connections; wait for quiet window')
+    live_names = {r['name'] for r in live}
+    require(live_names <= allowed_revisions, 'Another revision may still hold connections; wait for quiet window')
+    return live_names
 
 
 def capture():
@@ -136,7 +138,7 @@ def capture():
     template = baseline['template']
     health_path = path(template)
     image = immutable(template['containers'][0]['image'])
-    check_budget(template, image)
+    require(check_budget(template, image, {name}) == {name}, 'Baseline is missing from revision inventory')
     snapshot = Path(os.environ['RUNNER_TEMP']) / 'bible-rollback-snapshot.json'
     snapshot.write_text(json.dumps({'revision': name, 'image': image, 'readinessPath': health_path,
                                     'templateHash': template_hash(template)}))
@@ -156,16 +158,19 @@ def snapshot():
 def update():
     data = snapshot()
     baseline = revision(data['revision'])
-    check_budget(baseline['template'], data['image'])
+    require(check_budget(baseline['template'], data['image'], {data['revision']}) == {data['revision']}, 'Baseline is missing from revision inventory')
     require(baseline['active'] is True and baseline['healthState'] == 'Healthy' and baseline['runningState'] in ('Running', 'RunningAtMaxScale'), 'Baseline lost health before update')
     current = app()
     require(current['latestReadyRevisionName'] == current['latestRevisionName'] == data['revision'], 'Baseline changed before update')
     image = os.environ['IMAGE_REF']
     require(immutable(image) == image, 'Candidate must use an immutable image')
-    result = az('containerapp', 'update', *target(), '--image', image)
-    candidate = result['properties']['latestRevisionName']
-    require(candidate != data['revision'], 'Image update did not create a candidate')
-    exported(CANDIDATE_REVISION=candidate)
+    suffix = f"release-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+    require(re.fullmatch(r'release-[0-9]+-[0-9]+', suffix) is not None, 'Invalid release identity')
+    candidate = os.environ['API_APP_NAME'] + '--' + suffix
+    # Persist ownership before a possibly ambiguous network result from the mutation.
+    exported(CANDIDATE_REVISION=candidate, RUNTIME_UPDATE_STARTED='true')
+    result = az('containerapp', 'update', *target(), '--image', image, '--revision-suffix', suffix)
+    require(result['properties']['latestRevisionName'] == candidate, 'Image update returned another candidate')
 
 
 def wait(name, image, expected_hash=None):
@@ -193,7 +198,16 @@ def wait(name, image, expected_hash=None):
 
 
 def rollback():
+    require(os.environ.get('RUNTIME_UPDATE_STARTED') == 'true', 'No runtime mutation attempted; preserve healthy baseline')
     data = snapshot()
+    candidate = os.environ['CANDIDATE_REVISION']
+    current = app()
+    require(current['latestRevisionName'] == candidate and current['latestReadyRevisionName'] in (candidate, data['revision']),
+            'Rollback ownership UNKNOWN or superseded; refusing another revision')
+    state = revision(candidate)
+    require(state['template']['containers'][0]['image'] == os.environ['IMAGE_REF'] and
+            template_hash(state['template']) == data['templateHash'], 'Candidate ownership/template mismatch')
+    check_budget(revision(data['revision'])['template'], data['image'], {candidate, data['revision']})
     suffix = f"rollback-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
     result = az('containerapp', 'revision', 'copy', *target(), '--from-revision', data['revision'],
                 '--image', data['image'], '--revision-suffix', suffix)

@@ -145,7 +145,7 @@ jobs:
           echo "image=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
       - name: Roll back failed runtime
         id: rollback_runtime
-        if: ${{ failure() && steps.deploy_runtime.outcome != 'skipped' }}
+        if: ${{ failure() && env.RUNTIME_UPDATE_STARTED == 'true' }}
         run: python3 scripts/release-runtime.py rollback
       - name: Verify rolled back runtime
         if: ${{ failure() && steps.rollback_runtime.outcome == 'success' }}

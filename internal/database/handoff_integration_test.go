@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -75,8 +77,17 @@ func TestHandoffOverlapBudgetAndMigrationReplay(t *testing.T) {
 	cfg := handoffConfig(t)
 	Connect(cfg)
 	defer Close()
-	if err := DB.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
+	_, source, _, _ := runtime.Caller(0)
+	fixture, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "scripts", "readiness-fixture", "migrated-bible-baseline.sql"))
+	if err != nil {
 		t.Fatal(err)
+	}
+	for _, statement := range strings.Split(string(fixture), ";") {
+		if strings.TrimSpace(statement) != "" {
+			if err := DB.Exec(statement).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	Migrate()
 	var count int64
@@ -174,5 +185,13 @@ func TestHandoffOverlapBudgetAndMigrationReplay(t *testing.T) {
 	}
 	if retained != 0 {
 		t.Fatal("exited old process still owns database connections")
+	}
+	var text string
+	var dimensions int
+	if err := pool.QueryRowContext(t.Context(), "SELECT v.text,vector_dims(b.embedding) FROM verses v JOIN bible_vectors b ON b.verse_id=v.id WHERE v.id=1").Scan(&text, &dimensions); err != nil {
+		t.Fatal(err)
+	}
+	if text != "Handoff sentinel" || dimensions != 384 {
+		t.Fatal("handoff startup changed existing baseline content or vectors")
 	}
 }
