@@ -1,5 +1,8 @@
 import copy
 import importlib.util
+import json
+import subprocess
+import sys
 from pathlib import Path
 import unittest
 
@@ -100,6 +103,121 @@ class IsolationTests(unittest.TestCase):
             with self.subTest(code=code, text=text), self.assertRaises(RuntimeError):
                 self.m.console_result(code, text, 'abc')
 
+    def test_cloud_refuses_any_unreviewed_write_target_before_cli(self):
+        cloud = self.m.Cloud(self.ctx)
+        for resource in [self.ctx.registry_id, self.ctx.group_id.replace(self.ctx.group, 'alive'),
+                         self.ctx.group_id+'/providers/Microsoft.App/containerApps/api-gateway']:
+            with self.subTest(resource=resource), self.assertRaises(ValueError):
+                cloud.put(resource, {})
+
+    def test_preview_is_pure_and_never_claims_resolved_principal(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            env = dict(__import__('os').environ, **self.env, BIBLE_IMAGE_REF=self.image, HELPER_IMAGE_REF=self.helper,
+                       ISOLATION_OUTPUT=folder, PATH='')
+            proc = subprocess.run([sys.executable, str(ROOT/'isolation.py'), 'preview'], env=env,
+                                  capture_output=True,text=True,timeout=5)
+            self.assertEqual(proc.returncode,0,proc.stderr)
+            preview=json.loads((Path(folder)/'preview.json').read_text())
+            self.assertEqual(preview['role']['principalId'],'UNRESOLVED_NEW_ENVIRONMENT_IDENTITY')
+
+    def test_fault_evidence_requires_held_port_and_app_healthy_for_whole_window(self):
+        observations=[dict(phase='fault',mono=i,held=True,health=200,ready=503,outbound=0) for i in range(602)]
+        self.assertTrue(self.m.fault_window(observations,'fault',600))
+        observations[3]['health']=0
+        self.assertFalse(self.m.fault_window(observations,'fault',600))
+        observations[3]['health']=200
+        observations[4]['ready']=200
+        self.assertFalse(self.m.fault_window(observations,'fault',600))
+
+    def test_log_association_uses_nonce_and_exact_captured_revision(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'old-bible.log'
+            path.write_text(json.dumps({'Log':'GET /api/bible/v1/versions?isolation_nonce=iso-123-1-5'})+'\n')
+            self.assertEqual(self.m.nonce_routes([(path,'old')]), {'iso-123-1-5':{'old'}})
+            path.write_text('not JSON\n')
+            with self.assertRaises(RuntimeError):
+                self.m.nonce_routes([(path,'old')])
+
+    def test_release_provenance_rejects_failed_nonmain_or_other_workflow(self):
+        release=dict(path='.github/workflows/release.yml',head_branch='main',head_sha='d'*40,
+                     status='completed',conclusion='success',event='push')
+        self.assertEqual(self.m.release_commit(release),'d'*40)
+        for key,value in [('conclusion','failure'),('head_branch','feature'),('path','.github/workflows/ci.yml'),('event','pull_request')]:
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                self.m.release_commit(dict(release,**{key:value}))
+
+    def test_immutable_release_receipt_must_match_exact_run_and_commit(self):
+        pointer=dict(commit='d'*40,image=self.image,releaseUrl='https://github.com/rayselfs/bible-api/actions/runs/222')
+        self.assertEqual(self.m.receipt_image(pointer,'222','d'*40),self.image)
+        for key,value in [('commit','e'*40),('releaseUrl','https://github.com/rayselfs/bible-api/actions/runs/223'),
+                          ('image','alive.azurecr.io/alive/bible-api:main-ddddddd')]:
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                self.m.receipt_image(dict(pointer,**{key:value}),'222','d'*40)
+
+    def test_review_refuses_stale_source_and_missing_rate_or_slot(self):
+        import datetime as dt
+        now=dt.datetime.now(dt.timezone.utc)
+        review=dict(verifiedAt=now.isoformat(),expiresAt=(now+dt.timedelta(hours=1)).isoformat(),
+                    sourceCommit='a'*40,releaseCommit='d'*40,releaseRun=222,budgetUsd=3,maxMinutes=120,
+                    slot='root-reviewed-test-slot',rateSnapshotSha='e'*64,notBefore=(now-dt.timedelta(minutes=1)).isoformat())
+        env=dict(self.env,BIBLE_RELEASE_COMMIT='d'*40,BIBLE_RELEASE_RUN='222',ISOLATION_RATE_SHA='e'*64)
+        # Freeze is deliberately fixed to the scheduled media window; exercise other times deterministically.
+        with __import__('unittest.mock',fromlist=['patch']).patch.object(self.m,'media_frozen',return_value=False):
+            self.m.validate_approval(self.ctx,dict(env,BIBLE_ACA_ISOLATION_REVIEW=json.dumps(review)))
+            for key,value in [('sourceCommit','f'*40),('rateSnapshotSha','f'*64),('slot',''),
+                              ('verifiedAt',(now-dt.timedelta(hours=2)).isoformat())]:
+                with self.subTest(key=key),self.assertRaises(ValueError):
+                    self.m.validate_approval(self.ctx,dict(env,BIBLE_ACA_ISOLATION_REVIEW=json.dumps(dict(review,**{key:value}))))
+
+    def test_provision_publishes_actual_identity_without_grant_or_apps(self):
+        import tempfile
+        cloud=FakeCloud(self.ctx)
+        cloud.group,cloud.environment,cloud.role=None,None,None
+        with tempfile.TemporaryDirectory() as folder:
+            self.m.provision(self.ctx,cloud,self.m.plan(self.ctx,self.image,self.helper),Path(folder))
+            review=json.loads((Path(folder)/'role-plan.json').read_text())
+            self.assertEqual(review['principalId'],'11111111-1111-1111-1111-111111111111')
+        self.assertEqual(cloud.written,[self.ctx.group_id,self.ctx.environment_id])
+        self.assertNotIn('hhc-role-review',cloud.group['tags'])
+
+    def test_arm_payload_is_stdin_and_error_never_emits_secret(self):
+        from unittest.mock import patch
+        result=subprocess.CompletedProcess([],1,stdout='secret-marker',stderr='secret-marker')
+        with patch.object(self.m.subprocess,'run',return_value=result) as external:
+            with self.assertRaises(RuntimeError) as error:
+                self.m.Cloud(self.ctx).put(self.ctx.app_id('bible-ready-pg'),{'secret':'secret-marker'})
+            call=external.call_args
+            self.assertNotIn('secret-marker',str(call.args))
+            self.assertIn('secret-marker',call.kwargs['input'])
+            self.assertNotIn('secret-marker',str(error.exception))
+
+    def test_bind_fatal_requires_same_event_and_correct_port(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'daprd.log'
+            path.write_text(json.dumps({'Log':'level=fatal failed listen tcp :50002: bind: address already in use'})+'\n')
+            self.assertTrue(self.m.bind_fatal(path))
+            path.write_text(json.dumps({'Log':'starting50002'})+'\n'+json.dumps({'Log':'level=fatal port3500 address already in use'})+'\n')
+            self.assertFalse(self.m.bind_fatal(path))
+
+    def test_inactive_running_revision_is_never_omitted_from_budget(self):
+        import tempfile
+        cloud=FakeCloud(self.ctx)
+        cloud.get=lambda resource:{'properties':{'latestRevisionName':'old','latestReadyRevisionName':'old'}}
+        cloud.cli=lambda *args:[{'name':'stray','properties':{'active':False,'replicas':1,'runningState':'Running'}}]
+        with tempfile.TemporaryDirectory() as folder,self.assertRaises(ValueError):
+            self.m.runtime_inventory(self.ctx,cloud,Path(folder),'preflight',{'old'})
+
+    def test_helper_image_is_retained_if_resource_cleanup_failed(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder,patch.object(self.m,'Cloud',return_value=FakeCloud(self.ctx)),patch.object(self.m,'bounded',return_value='[]') as external:
+            with self.assertRaises(ValueError):
+                self.m.cleanup_helper(self.ctx,Path(folder))
+            self.assertEqual(external.call_count,0)
+
 
 class FakeCloud:
     def __init__(self, ctx):
@@ -112,6 +230,8 @@ class FakeCloud:
         self.deleted, self.written = [], []
 
     def get(self, resource):
+        if resource == self.ctx.infrastructure_id:
+            return None
         if resource == self.ctx.group_id:
             return self.group
         if resource == self.ctx.environment_id:
@@ -131,6 +251,11 @@ class FakeCloud:
         self.written.append(resource)
         if resource == self.ctx.role_id:
             self.role = body
+        elif resource == self.ctx.group_id:
+            self.group = body
+        elif resource == self.ctx.environment_id:
+            self.environment={'identity':{'principalId':'11111111-1111-1111-1111-111111111111'},
+                              'properties':{'provisioningState':'Succeeded','infrastructureResourceGroup':self.ctx.infrastructure_group}}
         return body
 
 

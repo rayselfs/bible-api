@@ -1,5 +1,8 @@
 # Bible API
 
+Operational isolation tooling: [disposable ACA Dapr-readiness acceptance](scripts/aca-readiness-isolation/README.md).
+Its workflow defaults to preview and requires a reviewed coordinator slot before any cloud execution.
+
 A modern, RESTful Bible API built with Go. This API provides access to Bible content across multiple versions with semantic search capabilities powered by pgvector and OpenAI embeddings.
 
 ## 🚀 Features

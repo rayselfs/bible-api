@@ -5,14 +5,19 @@ import datetime as dt
 import hashlib
 import json
 import os
+import signal
 from pathlib import Path
 import re
 import secrets
 import shlex
 import subprocess
 import sys
+import threading
+import tempfile
 import time
 import uuid
+import urllib.parse
+import urllib.request
 
 SUBSCRIPTION = '3765a72c-2c30-492c-8b88-7a26522903f8'
 PG_IMAGE = 'pgvector/pgvector:0.8.1-pg17@sha256:3e8b3adfd27b5707128f60956f62a793c3c9326ea8cfaf0eab7adccb5d700b21'
@@ -42,6 +47,8 @@ class Context:
         self.group = 'hhc-bible-ready-' + self.run
         self.group_id = f'/subscriptions/{SUBSCRIPTION}/resourceGroups/{self.group}'
         self.environment_id = self.group_id + '/providers/Microsoft.App/managedEnvironments/bible-ready-env'
+        self.infrastructure_group = 'hhc-bible-ready-infra-' + self.run
+        self.infrastructure_id = f'/subscriptions/{SUBSCRIPTION}/resourceGroups/{self.infrastructure_group}'
         self.registry_id = f'/subscriptions/{SUBSCRIPTION}/resourceGroups/alive/providers/Microsoft.ContainerRegistry/registries/alive'
         self.pull_role = f'/subscriptions/{SUBSCRIPTION}/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d'
         self.role_id = self.registry_id + '/providers/Microsoft.Authorization/roleAssignments/' + str(uuid.uuid5(uuid.NAMESPACE_URL, self.environment_id + self.pull_role))
@@ -89,7 +96,9 @@ def plan(ctx, bible_image, helper_image):
     env = [{'name': 'SERVER_PORT', 'value': '9999'}, {'name': 'GIN_MODE', 'value': 'release'},
            {'name': 'POSTGRES_HOST', 'value': 'bible-ready-pg'}, {'name': 'POSTGRES_USER', 'value': 'fixture'},
            {'name': 'POSTGRES_PASS', 'secretRef': 'pg-password'}, {'name': 'POSTGRES_DB', 'value': 'bible_fixture'},
-           {'name': 'POSTGRES_SSLMODE', 'value': 'disable'}, {'name': 'PGAPPNAME', 'value': 'isolation_baseline'}]
+           {'name': 'POSTGRES_SSLMODE', 'value': 'disable'}, {'name': 'DB_MAX_OPEN_CONNS', 'value': '8'},
+           {'name': 'DB_MAX_IDLE_CONNS', 'value': '2'}, {'name': 'DB_CONN_MAX_LIFETIME', 'value': '30m'},
+           {'name': 'DB_CONN_MAX_IDLE_TIME', 'value': '5m'}, {'name': 'PGAPPNAME', 'value': 'isolation_baseline'}]
     fixture = container('fixture', helper_image, .25, '0.5Gi',
                         [{'name': 'FIXTURE_MODE', 'value': 'idle'}, {'name': 'FIXTURE_RUN', 'value': ctx.run}],
                         [probe('/ready', 8081)])
@@ -109,6 +118,7 @@ def plan(ctx, bible_image, helper_image):
     return {'group': {'location': 'eastasia', 'tags': ctx.tags()},
             'environment': {'location': 'eastasia', 'tags': ctx.tags(), 'identity': {'type': 'SystemAssigned'},
                             'properties': {'appLogsConfiguration': {'destination': 'none'},
+                                           'infrastructureResourceGroup': ctx.infrastructure_group,
                                            'workloadProfiles': [{'name': 'Consumption', 'workloadProfileType': 'Consumption'}]}},
             'target': target, 'pg': pg, 'caller': caller,
             'role': {'id': ctx.role_id, 'scope': ctx.registry_id, 'roleDefinitionId': ctx.pull_role,
@@ -159,7 +169,7 @@ def cleanup(ctx, cloud):
 def assess(samples, routes, phases, bind_failure):
     if any(s.get('status') != 200 or s.get('valid') is not True for s in samples):
         return 'FAIL'
-    if not bind_failure or not samples:
+    if not bind_failure or not samples or not phases or len({s.get('nonce') for s in samples}) != len(samples):
         return 'UNKNOWN'
     for phase, expected in phases.items():
         records = [s for s in samples if s.get('phase') == phase]
@@ -184,3 +194,500 @@ def console_result(code, output, nonce):
         return json.loads(base64.b64decode(frames[0], validate=True))
     except (ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError('Management console evidence UNKNOWN') from exc
+
+
+def fault_window(observations, phase, seconds):
+    rows = [o for o in observations if o.get('phase') == phase]
+    return (len(rows) >= 2 and rows[-1]['mono'] - rows[0]['mono'] >= seconds and
+            all(o.get('held') is True and o.get('health') == 200 and o.get('ready') == 503 and
+                o.get('outbound') != 204 for o in rows) and
+            all(0 <= b['mono'] - a['mono'] <= 3 for a, b in zip(rows, rows[1:])))
+
+
+def nonce_routes(logs):
+    routes = {}
+    for path, revision in logs:
+        for line in path.read_text().splitlines():
+            try:
+                value = json.loads(line)
+                message = value.get('Log', value.get('log', ''))
+            except (ValueError, AttributeError) as exc:
+                raise RuntimeError('Unstructured log evidence UNKNOWN') from exc
+            for nonce in re.findall(r'isolation_nonce=(iso-[0-9]+-[0-9]+-[0-9]+)', message):
+                routes.setdefault(nonce, set()).add(revision)
+    return routes
+
+
+def bind_fatal(path):
+    for line in path.read_text().splitlines():
+        try:
+            value = json.loads(line)
+            message = value.get('Log', value.get('log', '')).lower()
+        except (ValueError, AttributeError):
+            return False
+        if 'fatal' in message and '50002' in message and 'address already in use' in message:
+            return True
+    return False
+
+
+def bounded(command, timeout=90, data=None):
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        stdout, _ = process.communicate(data, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.communicate()
+        raise RuntimeError('Management command timed out; result UNKNOWN') from exc
+    if process.returncode:
+        raise RuntimeError('Management command failed; result UNKNOWN')
+    return stdout
+
+
+class Cloud:
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def allowed(self, resource):
+        return resource in {self.ctx.group_id, self.ctx.environment_id, self.ctx.role_id,
+                            *(self.ctx.app_id(name) for name in APPS)}
+
+    def request(self, method, resource, body=None):
+        require(self.allowed(resource) or (method == 'GET' and resource == self.ctx.infrastructure_id), 'Unreviewed resource target')
+        api = '2025-07-01'
+        if resource in (self.ctx.app_id(name) for name in APPS):
+            api = '2026-01-01'
+        if resource == self.ctx.group_id or resource == self.ctx.infrastructure_id:
+            api = '2021-04-01'
+        elif resource == self.ctx.role_id:
+            api = '2022-04-01'
+        command = ['az', 'rest', '--method', method, '--url',
+                   f'https://management.azure.com{resource}?api-version={api}', '--only-show-errors']
+        if body is not None:
+            command += ['--body', '@/dev/stdin', '--headers', 'Content-Type=application/json']
+        process = subprocess.run(command, input=json.dumps(body) if body is not None else None,
+                                 capture_output=True, text=True, timeout=90)
+        if method == 'GET' and process.returncode and any(code in process.stderr for code in
+                ('ResourceGroupNotFound', 'ResourceNotFound', 'RoleAssignmentNotFound')):
+            return None
+        if process.returncode:
+            # Full ARM responses/CLI errors may contain secret payloads; never emit them.
+            raise RuntimeError('Azure management operation failed; result UNKNOWN')
+        return json.loads(process.stdout) if process.stdout.strip() else None
+
+    def get(self, resource):
+        return self.request('GET', resource)
+
+    def put(self, resource, body):
+        return self.request('PUT', resource, body)
+
+    def delete(self, resource):
+        self.request('DELETE', resource)
+        wait_for(lambda: self.get(resource) is None, 300, 'resource deletion')
+
+    def cli(self, *args):
+        return json.loads(bounded(['az', *args, '--only-show-errors', '--output', 'json']))
+
+    def replica(self, app, revision):
+        require(app in APPS and revision.startswith(app+'--'), 'Unexpected replica target')
+        replicas = self.cli('containerapp', 'replica', 'list', '-g', self.ctx.group, '-n', app, '--revision', revision)
+        require(len(replicas) == 1, 'Acceptance requires one actual replica; unexpected scale is UNKNOWN')
+        return replicas[0]['name']
+
+    def console(self, app, revision, replica, command):
+        require(app in APPS and revision.startswith(app+'--') and replica.startswith(revision+'-'), 'Unexpected console target')
+        az = ['az', 'containerapp', 'exec', '-g', self.ctx.group, '-n', app, '--revision', revision,
+              '--replica', replica, '--container', 'postgres' if app == 'bible-ready-pg' else 'fixture', '--command', command]
+        # One bounded console call. The fixture emits one nonce frame; ANSI/prompt text is not health evidence.
+        return bounded(['script', '-q', '-e', '-c', shlex.join(az), '/dev/null'], 90)
+
+    def control(self, app, revision, replica, action):
+        require(action in ('state', 'release') or action in ('phase-'+p for p in
+                ('baseline', 'transition', 'fault', 'recovered', 'rollback_fault', 'rollback', 'stop')), 'Unexpected control')
+        nonce = secrets.token_hex(8)
+        output = self.console(app, revision, replica, '/fixture client '+action+' '+nonce)
+        return console_result(0, output, nonce)
+
+
+def wait_for(predicate, seconds, label):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(5)
+    raise RuntimeError(label+' timed out; result UNKNOWN')
+
+
+def write_json(folder, name, value):
+    (folder/name).write_text(json.dumps(value, indent=2, sort_keys=True)+'\n')
+
+
+def ready_revision(ctx, cloud, app, suffix, images):
+    expected = app+'--'+suffix
+    def check():
+        current = cloud.get(ctx.app_id(app))['properties']
+        if current.get('latestRevisionName') != expected or current.get('latestReadyRevisionName') != expected:
+            return False
+        revision = cloud.cli('containerapp', 'revision', 'show', '-g', ctx.group, '-n', app, '--revision', expected)['properties']
+        require({c['name']:c['image'] for c in revision['template']['containers']} == images, 'Runtime digest mismatch')
+        return (revision.get('active') is True and revision.get('healthState') == 'Healthy' and
+                revision.get('runningState') in ('Running', 'RunningAtMaxScale'))
+    wait_for(check, 600, app+' readiness')
+    return expected, cloud.replica(app, expected)
+
+
+def pg_sql(ctx, cloud, revision, replica, sql):
+    nonce = secrets.token_hex(8)
+    command = shlex.join(['psql', '--no-psqlrc', '-U', 'fixture', '-d', 'bible_fixture', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', sql])
+    shell = 'set -eu; value="$('+command+')"; printf "ISOLATION_'+nonce+'=%s\\n" "$(printf %s "$value" | base64 | tr -d \'\\n\')"'
+    output = cloud.console('bible-ready-pg', revision, replica, '/bin/sh -c '+shlex.quote(shell))
+    return console_result(0, output, nonce)
+
+
+def validate_approval(ctx, env):
+    review = json.loads(env.get('BIBLE_ACA_ISOLATION_REVIEW', '{}'))
+    now = dt.datetime.now(dt.timezone.utc)
+    verified = dt.datetime.fromisoformat(review['verifiedAt'].replace('Z', '+00:00'))
+    expires = dt.datetime.fromisoformat(review['expiresAt'].replace('Z', '+00:00'))
+    require(verified.tzinfo is not None and expires.tzinfo is not None, 'Review timestamps need timezones')
+    require(dt.timedelta(0) <= now-verified <= dt.timedelta(minutes=30), 'Stale isolation review')
+    require(now < expires <= now+dt.timedelta(hours=2), 'Expired/unbounded isolation review')
+    require(review.get('sourceCommit') == ctx.source and review.get('releaseCommit') == env.get('BIBLE_RELEASE_COMMIT') and
+            str(review.get('releaseRun')) == env.get('BIBLE_RELEASE_RUN'), 'Artifact review mismatch')
+    require(review.get('budgetUsd') == 3 and review.get('maxMinutes') == 120 and review.get('slot'), 'Missing budget/assigned slot review')
+    require(review.get('rateSnapshotSha') == env.get('ISOLATION_RATE_SHA') and review.get('rateSnapshotSha'), 'Fresh rate review mismatch')
+    not_before = dt.datetime.fromisoformat(review['notBefore'].replace('Z', '+00:00'))
+    require(not_before.tzinfo is not None, 'Slot timestamp needs timezone')
+    require(now >= not_before, 'Coordinator slot has not started')
+    require(not media_frozen(now), 'Media freeze')
+    return review
+
+
+def media_frozen(now):
+    taipei = now + dt.timedelta(hours=8)
+    return taipei.date() == dt.date(2026, 10, 20) and dt.time(5, 15) <= taipei.time() < dt.time(6)
+
+
+def release_commit(release):
+    require(release.get('path') == '.github/workflows/release.yml' and release.get('head_branch') == 'main' and
+            release.get('status') == 'completed' and release.get('conclusion') == 'success' and
+            release.get('event') in ('push', 'workflow_dispatch'), 'Successful normal main Production Release required')
+    commit = release.get('head_sha', '')
+    require(re.fullmatch(r'[0-9a-f]{40}', commit) is not None, 'Invalid release source')
+    return commit
+
+
+def receipt_image(pointer, run, commit):
+    require(pointer.get('commit') == commit and pointer.get('releaseUrl') ==
+            'https://github.com/rayselfs/bible-api/actions/runs/'+run, 'Current normal Release receipt mismatch')
+    return immutable(pointer.get('image', ''), 'bible-api')
+
+
+def export(**values):
+    with open(os.environ['GITHUB_ENV'], 'a') as output:
+        for key, value in values.items():
+            require('\n' not in value and '\r' not in value, 'Invalid workflow output')
+            output.write(key+'='+value+'\n')
+
+
+def rates(folder):
+    query = urllib.parse.urlencode({'$filter': "serviceName eq 'Azure Container Apps' and armRegionName eq 'eastasia' and priceType eq 'Consumption'", 'currencyCode': 'USD'})
+    with urllib.request.urlopen('https://prices.azure.com/api/retail/prices?'+query, timeout=30) as response:
+        raw = json.load(response)
+    require(not raw.get('NextPageLink'), 'Incomplete retail price snapshot')
+    names = ('Standard vCPU Active Usage', 'Standard Memory Active Usage', 'Environment Management Hour')
+    selected = [{key: row[key] for key in ('meterName', 'retailPrice', 'unitOfMeasure', 'effectiveStartDate', 'currencyCode')}
+                for row in raw['Items'] if row.get('isPrimaryMeterRegion') and row['meterName'] in names]
+    require(len(selected) == 3, 'Unexpected retail meters')
+    selected.sort(key=lambda row: row['meterName'])
+    write_json(folder, 'retail-rates.json', selected)
+    export(ISOLATION_RATE_SHA=digest(selected))
+
+
+def resolve_release(ctx, folder):
+    run = os.environ['BIBLE_RELEASE_RUN']
+    require(re.fullmatch(r'[1-9][0-9]{0,18}', run) is not None, 'Invalid normal release run')
+    release = json.loads(bounded(['gh', 'api', 'repos/rayselfs/bible-api/actions/runs/'+run]))
+    commit = release_commit(release)
+    bounded(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'])
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary)/'current.json'
+        bounded(['az', 'storage', 'blob', 'download', '--account-name', 'hhcapidocsprod',
+                 '--container-name', 'api-docs-bible-api', '--name', 'current.json', '--auth-mode', 'login',
+                 '--file', str(path), '--no-progress', '--only-show-errors', '--output', 'none'])
+        pointer = json.loads(path.read_text())
+    ref = receipt_image(pointer, run, commit)
+    write_json(folder, 'release-receipt.json', pointer)
+    write_json(folder, 'bible-provenance.json', {'run': run, 'commit': commit, 'image': ref,
+                                               'workflowSource': ctx.source, 'releaseUrl': release['html_url']})
+    export(BIBLE_IMAGE_REF=ref, BIBLE_RELEASE_COMMIT=commit)
+
+
+def build_helper(ctx, folder):
+    validate_approval(ctx, os.environ)
+    tag = 'alive/bible-readiness-fixture:isolation-'+ctx.run
+    bounded(['az', 'acr', 'build', '--registry', 'alive', '--image', tag,
+             '--file', 'scripts/aca-readiness-isolation/Dockerfile', '--build-arg', 'FIXTURE_RUN='+ctx.run,
+             '--no-logs', '--only-show-errors', '.'], 900)
+    record = json.loads(bounded(['az', 'acr', 'repository', 'show', '--name', 'alive', '--image', tag,
+                                '--output', 'json', '--only-show-errors']))
+    image = immutable('alive.azurecr.io/alive/bible-readiness-fixture@'+record['digest'], 'bible-readiness-fixture')
+    write_json(folder, 'helper-provenance.json', {'image': image, 'tag': tag, 'run': ctx.run, 'source': ctx.source})
+    export(HELPER_IMAGE_REF=image)
+
+
+def cleanup_helper(ctx, folder):
+    cloud = Cloud(ctx)
+    require(all(cloud.get(resource) is None for resource in (ctx.group_id,ctx.infrastructure_id,ctx.role_id)),
+            'Resources still exist; retain their helper image')
+    repository, tag = 'alive/bible-readiness-fixture', 'isolation-'+ctx.run
+    def tags():
+        repos = json.loads(bounded(['az', 'acr', 'repository', 'list', '--name', 'alive', '--output', 'json', '--only-show-errors']))
+        if repository not in repos:
+            return []
+        return json.loads(bounded(['az', 'acr', 'repository', 'show-tags', '--name', 'alive', '--repository',
+                                   repository, '--detail', '--output', 'json', '--only-show-errors']))
+    rows = tags()
+    own = [row for row in rows if row['name'] == tag]
+    if not own:
+        write_json(folder, 'cleanup-helper.json', {'ownedTagAbsent': True, 'unreferencedManifestsNotPurged': True})
+        return
+    require(len(own) == 1, 'Ambiguous helper image tag')
+    sha = own[0]['digest']
+    immutable('alive.azurecr.io/'+repository+'@'+sha, 'bible-readiness-fixture')
+    if any(row['digest'] == sha and row['name'] != tag for row in rows):
+        write_json(folder, 'cleanup-helper.json', {'retainedDigest': sha, 'reason': 'other tags exist; no broad purge'})
+        return
+    bounded(['az', 'acr', 'repository', 'delete', '--name', 'alive', '--image', repository+'@'+sha,
+             '--yes', '--only-show-errors'])
+    rows = tags()
+    require(all(row['name'] != tag for row in rows), 'Helper deletion not confirmed')
+    write_json(folder, 'cleanup-helper.json', {'deletedDigest': sha, 'run': ctx.run})
+
+
+def runtime_inventory(ctx, cloud, folder, name, allowed=None):
+    current = cloud.get(ctx.app_id('bible-ready-target'))['properties']
+    rows = cloud.cli('containerapp', 'revision', 'list', '-g', ctx.group, '-n', 'bible-ready-target', '--all')
+    live = {r['name'] for r in rows if r['properties'].get('active') is True or
+            r['properties'].get('replicas', 0) > 0 or r['properties'].get('runningState') not in ('Stopped', 'Inactive', 'ScaleTo0')}
+    require(len(live) <= 3 and (allowed is None or live <= allowed), 'Unknown or excessive live revision overlap')
+    write_json(folder, 'inventory-'+name+'.json', {'latest': current['latestRevisionName'],
+        'latestReady': current['latestReadyRevisionName'], 'revisions': [
+         {'name': r['name'], **{key: r['properties'].get(key) for key in ('active', 'replicas', 'healthState', 'runningState')},
+          'images': [c['image'] for c in r['properties']['template']['containers']],
+          'probes': [c.get('probes', []) for c in r['properties']['template']['containers']],
+          'scale': r['properties']['template']['scale']} for r in rows]})
+    return live
+
+
+def provision(ctx, cloud, manifests, folder):
+    require(cloud.get(ctx.group_id) is None and cloud.get(ctx.infrastructure_id) is None and cloud.get(ctx.role_id) is None,
+            'Allocation already exists; do not adopt or overwrite')
+    cloud.put(ctx.group_id, manifests['group'])
+    cloud.put(ctx.environment_id, manifests['environment'])
+    environment = wait_for(lambda: (lambda e: e if e and e.get('properties', {}).get('provisioningState') == 'Succeeded' else None)(cloud.get(ctx.environment_id)),
+                           900, 'environment provisioning')
+    require(environment['properties'].get('infrastructureResourceGroup') in (None, ctx.infrastructure_group), 'Unexpected infrastructure group')
+    review = role_plan(ctx, environment)
+    write_json(folder, 'role-plan.json', review)
+    print(json.dumps({'rolePlan': review, 'reviewHash': digest(review), 'reviewMarker': 'hhc-role-review',
+                      'waitSeconds': 600}), flush=True)
+    return review
+
+
+def run_acceptance(ctx, cloud, manifests, folder):
+    require(owned(ctx, cloud, live=True) is not None, 'Run environment was not provisioned')
+    review = role_plan(ctx, cloud.get(ctx.environment_id))
+    require(json.loads((folder/'role-plan.json').read_text()) == review, 'Published role plan changed')
+    wait_for(lambda: (owned(ctx, cloud, live=True) or {}).get('tags', {}).get('hhc-role-review') == digest(review),
+             600, 'coordinator exact principal/role review')
+    grant_reviewed_role(ctx, cloud, review)
+    password = secrets.token_urlsafe(32)
+    for key in ('pg', 'target'):
+        manifests[key]['properties']['configuration']['secrets'] = [{'name': 'pg-password', 'value': password}]
+    cloud.put(ctx.app_id('bible-ready-pg'), manifests['pg'])
+    images = {key:{c['name']:c['image'] for c in manifests[key]['properties']['template']['containers']} for key in ('pg','target','caller')}
+    pg_revision, pg_replica = ready_revision(ctx, cloud, 'bible-ready-pg', 'baseline',images['pg'])
+    pg_sql(ctx, cloud, pg_revision, pg_replica, "CREATE EXTENSION IF NOT EXISTS vector; SELECT '{\"ok\":true}';")
+    cloud.put(ctx.app_id('bible-ready-target'), manifests['target'])
+    baseline, baseline_replica = ready_revision(ctx, cloud, 'bible-ready-target', 'baseline',images['target'])
+    seed = "INSERT INTO versions(code,name,locale) VALUES('KJV','Isolation fixture','en'); SELECT json_build_object('history',(SELECT count(*) FROM migrations));"
+    require(pg_sql(ctx, cloud, pg_revision, pg_replica, seed).get('history') == 6, 'Unexpected actual migration history')
+    cloud.put(ctx.app_id('bible-ready-caller'), manifests['caller'])
+    caller, caller_replica = ready_revision(ctx, cloud, 'bible-ready-caller', 'baseline',images['caller'])
+    processes, handles, threads, log_files = [], [], [], []
+
+    def logs(revision, replica, container):
+        path = folder/(revision+'-'+container+'.log')
+        handle = path.open('w'); handles.append(handle)
+        process = subprocess.Popen(['az', 'containerapp', 'logs', 'show', '-g', ctx.group, '-n', 'bible-ready-target',
+                    '--revision', revision, '--replica', replica, '--container', container,
+                    '--format', 'json', '--tail', '300', '--follow', 'true', '--only-show-errors'],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        def collect():
+            for line in process.stdout:
+                if handle.tell() >= 20_000_000:
+                    return
+                handle.write(line.replace(password, '[REDACTED]'))
+                handle.flush()
+        thread = threading.Thread(target=collect, daemon=True)
+        thread.start(); threads.append(thread)
+        processes.append(process)
+        if container == 'bible-api':
+            log_files.append((path, revision))
+        return path
+
+    def control(revision, replica, action):
+        return cloud.control('bible-ready-target', revision, replica, action)
+
+    def phase(name, seconds):
+        runtime_inventory(ctx, cloud, folder, name+'-start')
+        cloud.control('bible-ready-caller', caller, caller_replica, 'phase-'+name)
+        time.sleep(seconds+3)
+        require(all(p.poll() is None for p in processes), 'Log stream stopped; evidence UNKNOWN')
+        require(all(h.tell() < 20_000_000 for h in handles), 'Log evidence limit exceeded')
+        runtime_inventory(ctx, cloud, folder, name+'-end')
+
+    expected = {}
+    fatal_paths = []
+    history = {}
+    try:
+        logs(baseline, baseline_replica, 'bible-api')
+        phase('baseline', 60)
+        expected['baseline'] = {'seconds': 60, 'revision': baseline}
+        require(pg_sql(ctx, cloud, pg_revision, pg_replica,
+                "SELECT json_build_object('count',count(*)) FROM pg_stat_activity WHERE application_name='isolation_baseline';")['count'] > 0,
+                'PG application_name attribution unavailable')
+        for suffix, fault_phase, serving, recovered_phase in [
+                ('fault', 'fault', baseline, 'recovered'), ('fault-two', 'rollback_fault', 'bible-ready-target--fault', 'rollback')]:
+            cloud.control('bible-ready-caller', caller, caller_replica, 'phase-transition')
+            current = cloud.get(ctx.app_id('bible-ready-target'))['properties']
+            require(current['latestRevisionName'] == current['latestReadyRevisionName'] == serving,
+                    'Another revision superseded the serving baseline')
+            runtime_inventory(ctx, cloud, folder, suffix+'-preflight', {serving})
+            target = manifests['target']
+            target['properties']['template']['revisionSuffix'] = suffix
+            containers = target['properties']['template']['containers']
+            containers[0]['env'][-1]['value'] = 'isolation_'+suffix.replace('-', '_')
+            containers[1]['env'][0]['value'] = 'hold'
+            cloud.put(ctx.app_id('bible-ready-target'), target)
+            candidate = 'bible-ready-target--'+suffix
+            replica = wait_for(lambda: _candidate_replica(ctx, cloud, candidate), 300, 'candidate replica')
+            logs(candidate, replica, 'bible-api')
+            fatal_paths.append(logs(candidate, replica, 'daprd'))
+            def armed():
+                state = control(candidate, replica, 'state')
+                require(not state.get('problem'), 'Candidate fault capability UNKNOWN')
+                rows = state.get('observations') or []
+                return state.get('armed') and state.get('held') and rows and rows[-1]['health'] == 200 and rows[-1]['ready'] == 503
+            wait_for(armed, 90, 'candidate-only fault')
+            require(cloud.get(ctx.app_id('bible-ready-target'))['properties']['latestReadyRevisionName'] == serving,
+                    'Old revision lost authority before fault window')
+            control(candidate, replica, 'phase-'+fault_phase)
+            phase(fault_phase, 600)
+            state = control(candidate, replica, 'state')
+            history[fault_phase] = state
+            require(fault_window(state.get('observations') or [], fault_phase, 600), 'Fault window not proven; UNKNOWN')
+            expected[fault_phase] = {'seconds': 600, 'revision': serving}
+            cloud.control('bible-ready-caller', caller, caller_replica, 'phase-transition')
+            if suffix == 'fault':
+                control(candidate, replica, 'release')
+                ready_revision(ctx, cloud, 'bible-ready-target', suffix,images['target'])
+                recovered = candidate
+            else:
+                current = cloud.get(ctx.app_id('bible-ready-target'))['properties']
+                require(current['latestRevisionName'] == candidate and current['latestReadyRevisionName'] == serving,
+                        'Rollback no longer owns candidate')
+                runtime_inventory(ctx, cloud, folder, 'rollback-preflight', {serving, candidate})
+                cloud.cli('containerapp', 'revision', 'copy', '-g', ctx.group, '-n', 'bible-ready-target',
+                          '--from-revision', baseline, '--revision-suffix', 'restore')
+                recovered, restore_replica = ready_revision(ctx, cloud, 'bible-ready-target', 'restore',images['target'])
+                logs(recovered, restore_replica, 'bible-api')
+                original = cloud.cli('containerapp', 'revision', 'show', '-g', ctx.group, '-n', 'bible-ready-target', '--revision', baseline)['properties']['template']
+                restored = cloud.cli('containerapp', 'revision', 'show', '-g', ctx.group, '-n', 'bible-ready-target', '--revision', recovered)['properties']['template']
+                original.pop('revisionSuffix', None); restored.pop('revisionSuffix', None)
+                require(original == restored, 'Rollback original template/digest mismatch')
+            phase(recovered_phase, 60)
+            expected[recovered_phase] = {'seconds': 60, 'revision': recovered}
+            old_name = 'isolation_baseline' if suffix == 'fault' else 'isolation_fault'
+            wait_for(lambda: pg_sql(ctx, cloud, pg_revision, pg_replica,
+                     "SELECT json_build_object('count',count(*)) FROM pg_stat_activity WHERE application_name='"+old_name+"';")['count'] == 0,
+                     120, 'old process connection release')
+        cloud.control('bible-ready-caller', caller, caller_replica, 'phase-stop')
+        samples = cloud.control('bible-ready-caller', caller, caller_replica, 'state')
+        require(not samples.get('problem'), 'Caller evidence incomplete')
+        write_json(folder, 'caller.json', samples)
+        write_json(folder, 'fault-observations.json', history)
+    finally:
+        stopped_early = any(p.poll() is not None for p in processes)
+        for p in processes:
+            if p.poll() is None:
+                os.killpg(p.pid, signal.SIGTERM)
+            p.wait(timeout=15)
+        for thread in threads:
+            thread.join(timeout=5)
+        require(not any(thread.is_alive() for thread in threads), 'Log collector did not close')
+        for h in handles:
+            h.close()
+        write_json(folder, 'log-stream-status.json', {'stoppedEarly': stopped_early})
+    require(not stopped_early, 'Log stream continuity UNKNOWN')
+    bind = len(fatal_paths) == 2 and all(bind_fatal(p) for p in fatal_paths)
+    result = assess(samples.get('samples') or [], nonce_routes(log_files), expected, bind)
+    write_json(folder, 'acceptance.json', {'result': result, 'phases': expected, 'actualManagedBindFailure': bind})
+    require(result == 'PASS', 'ACA acceptance '+result)
+
+
+def _candidate_replica(ctx, cloud, revision):
+    rows = cloud.cli('containerapp', 'replica', 'list', '-g', ctx.group, '-n', 'bible-ready-target', '--revision', revision)
+    require(len(rows) <= 1, 'Unexpected scale; acceptance UNKNOWN')
+    return rows[0]['name'] if rows else None
+
+
+def main():
+    require(len(sys.argv) == 2 and sys.argv[1] in ('preview', 'resolve', 'rates', 'preflight', 'build-helper', 'cleanup-helper', 'provision', 'execute', 'cleanup'), 'Unexpected operation')
+    ctx = Context(os.environ)
+    folder = Path(os.environ.get('ISOLATION_OUTPUT', 'isolation-evidence'))
+    folder.mkdir(parents=True, exist_ok=True)
+    cloud = Cloud(ctx)
+    if sys.argv[1] == 'rates':
+        rates(folder)
+        return
+    if sys.argv[1] == 'resolve':
+        resolve_release(ctx, folder)
+        return
+    if sys.argv[1] == 'preflight':
+        validate_approval(ctx, os.environ)
+        return
+    if sys.argv[1] == 'build-helper':
+        build_helper(ctx, folder)
+        return
+    if sys.argv[1] == 'cleanup-helper':
+        cleanup_helper(ctx, folder)
+        return
+    if sys.argv[1] == 'cleanup':
+        cleanup(ctx, cloud)
+        wait_for(lambda: cloud.get(ctx.infrastructure_id) is None, 300, 'platform infrastructure group deletion')
+        write_json(folder, 'cleanup.json', {'deletedRun': ctx.run, 'verifiedAbsent': True})
+        return
+    manifests = plan(ctx, os.environ['BIBLE_IMAGE_REF'], os.environ['HELPER_IMAGE_REF'])
+    write_json(folder, 'preview.json', manifests)
+    if sys.argv[1] == 'preview':
+        return
+    validate_approval(ctx, os.environ)
+    if sys.argv[1] == 'provision':
+        provision(ctx, cloud, manifests, folder)
+        return
+    run_acceptance(ctx, cloud, manifests, folder)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, RuntimeError, KeyError, subprocess.TimeoutExpired) as exc:
+        # Static error reasons only; no CLI output, resource payload, or fixture secrets.
+        folder = Path(os.environ.get('ISOLATION_OUTPUT', 'isolation-evidence'))
+        folder.mkdir(parents=True, exist_ok=True)
+        write_json(folder, 'stopped.json', {'result': 'UNKNOWN', 'reason': str(exc)})
+        print('Isolation stopped: '+str(exc), file=sys.stderr)
+        sys.exit(1)

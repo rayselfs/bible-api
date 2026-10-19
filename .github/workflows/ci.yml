@@ -43,5 +43,8 @@ jobs:
           npx --yes @redocly/cli@2.47.0 lint docs/openapi.yaml
           go test -race ./... -count=1 -p=1
           go vet ./...
+          python3 -m unittest discover -s scripts/aca-readiness-isolation -p 'test_*.py'
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/readiness-aca-isolation.yml
           ./scripts/test-release-workflow.sh
           docker build -t bible-api:verify .
+          docker build -f scripts/aca-readiness-isolation/Dockerfile -t bible-readiness-fixture:verify .
