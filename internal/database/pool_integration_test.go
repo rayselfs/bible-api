@@ -60,19 +60,22 @@ func TestPoolCapAndCancellation(t *testing.T) {
 	if db.Stats().MaxLifetimeClosed == 0 {
 		t.Fatal("configured connection lifetime was not applied")
 	}
-	db.SetConnMaxLifetime(30 * time.Minute)
 	// Verify the production idle-time setting through a second configured connection.
 	cfg.DBConnMaxLifetime = 30 * time.Minute
 	cfg.DBConnMaxIdleTime = 20 * time.Millisecond
 	Close()
 	Connect(cfg)
 	db, _ = DB.DB()
-	deadline := time.Now().Add(2 * time.Second)
+	if err := db.PingContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// database/sql reaps idle connections on a cleaner tick of at least one second.
+	deadline := time.Now().Add(5 * time.Second)
 	for db.Stats().MaxIdleTimeClosed == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if db.Stats().MaxIdleTimeClosed == 0 {
-		t.Fatal("configured idle timeout was not applied")
+		t.Fatalf("configured idle timeout was not applied: %+v", db.Stats())
 	}
 	if err := db.PingContext(t.Context()); err != nil {
 		t.Fatal(err)
