@@ -683,8 +683,17 @@ For support and questions, please open an issue in the repository or contact the
 
 ## PostgreSQL connection pool
 
-`DB_MAX_OPEN_CONNS` defaults to `8`, `DB_MAX_IDLE_CONNS` to `2`, `DB_CONN_MAX_LIFETIME` to `30m`, and `DB_CONN_MAX_IDLE_TIME` to `5m`. Open must be positive; idle may be zero but cannot exceed open; durations must be positive. Invalid settings stop startup. The server and importer read these same settings; an import can use `DB_MAX_OPEN_CONNS=4 DB_MAX_IDLE_CONNS=1` independently. Existing deployed jobs are not changed by this PR.
+`DB_MAX_OPEN_CONNS` defaults to `8`, `DB_MAX_IDLE_CONNS` to `2`, `DB_CONN_MAX_LIFETIME` to `30m`, and `DB_CONN_MAX_IDLE_TIME` to `5m`. Open must be positive; idle may be zero but cannot exceed open; durations must be positive. Invalid settings stop startup. The API defaults to 8 open / 2 idle; the `import` command defaults to 4 open / 1 idle with the same durations. Explicit valid environment settings override either mode. Existing deployed jobs adopt these defaults only after their image is updated.
 
 Vector downloads keep their existing 384-dimensional little-endian binary format. Queries and buffered sends honor cancellation so a disconnected or slow consumer cannot retain a PostgreSQL connection indefinitely.
 
 CI uses disposable PostgreSQL 17 + pgvector for pool/stream integration tests. Locally set `BIBLE_TEST_DATABASE_URL` to a disposable loopback fixture and run `go test -race ./... -count=1 -p=1`. The tests create private schemas and synthetic vectors, then remove them. With no fixture URL, integration tests skip; production databases must never be used. Pool defaults remain initial budgets pending representative performance tests.
+
+
+### Preparing the import job image
+
+The existing Production Release workflow defaults to the API release for `main` pushes and manual runs. A future manual run on `main` may select `target=import` with the exact confirmation `prepare-bible-import-image`. It runs the existing verification and ACR build/digest path, then updates only the existing `alive/bible-import` Container Apps Job image to the immutable digest. It does not start an import, publish API documentation, or change the API, Dapr, job arguments, mounts, secrets, environment, or scale. Starting an import remains a separate explicitly authorized operation. The importer does not run schema migrations; the target database must already have the required schema.
+
+Before using this option, provision and review a distinct `BIBLE_IMPORT_AZURE_CLIENT_ID` GitHub environment/repository variable and its OIDC federation for this repository's `production` environment, together with the existing tenant/subscription variables. Its permissions must cover the existing ACR build/push/digest operations and image updates scoped to the `bible-import` job, without API app, job start, database, or role-assignment privileges. Do not broaden the API deployment identity. A missing import identity or reuse of the API identity is rejected before Azure login; no permissions or credentials are provisioned by this repository change. Review the current job image and preserved job configuration before any future authorized preparation.
+
+`./scripts/test-release-workflow.sh` includes mock Azure fixtures for import target guards and image-only updates. Local PostgreSQL integration fixtures validate all effective pgx hosts (including query overrides, environment/service settings and fallback hosts) as numeric loopback targets before writes; do not use production connection strings.

@@ -2,54 +2,91 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"github.com/jackc/pgx/v5"
 	"hhc/bible-api/configs"
-	"net/url"
+	"hhc/bible-api/internal/testpostgres"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 )
 
 func TestPoolCapAndCancellation(t *testing.T) {
+	for _, mode := range []string{"api", "import"} {
+		t.Run(mode, func(t *testing.T) { testPoolCapAndCancellation(t, mode) })
+	}
+}
+
+func testPoolCapAndCancellation(t *testing.T, mode string) {
 	raw := os.Getenv("BIBLE_TEST_DATABASE_URL")
 	if raw == "" {
 		t.Skip("BIBLE_TEST_DATABASE_URL is not configured")
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() != "127.0.0.1" {
-		t.Fatal("integration tests require a loopback PostgreSQL fixture")
+	testpostgres.LoopbackDSN(t, raw)
+	parsed, err := pgx.ParseConfig(raw)
+	if err != nil {
+		t.Fatal(err)
 	}
-	password, _ := u.User.Password()
-	cfg := &configs.Env{PostgresHost: u.Hostname(), PostgresPort: u.Port(), PostgresUser: u.User.Username(), PostgresPass: password, PostgresDB: u.Path[1:], PostgresSSLMode: "disable", DBMaxOpenConns: 2, DBMaxIdleConns: 1, DBConnMaxLifetime: 80 * time.Millisecond, DBConnMaxIdleTime: 5 * time.Minute}
+	for _, key := range []string{"DB_MAX_OPEN_CONNS", "DB_MAX_IDLE_CONNS", "DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME"} {
+		t.Setenv(key, "")
+	}
+	var cfg *configs.Env
+	if mode == "import" {
+		cfg, err = configs.InitImportConfig()
+	} else {
+		cfg, err = configs.InitConfig()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.PostgresHost = parsed.Host
+	cfg.PostgresPort = strconv.Itoa(int(parsed.Port))
+	cfg.PostgresUser = parsed.User
+	cfg.PostgresPass = parsed.Password
+	cfg.PostgresDB = parsed.Database
+	cfg.PostgresSSLMode = "disable"
+	cfg.DBConnMaxLifetime = 80 * time.Millisecond
+	// Validate the same assembled DSN Connect consumes, not just the URL authority.
+	testpostgres.LoopbackDSN(t, buildDSN(cfg))
+	cap := 8
+	if mode == "import" {
+		cap = 4
+	}
 	Connect(cfg)
 	t.Cleanup(Close)
 	db, err := DB.DB()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if db.Stats().MaxOpenConnections != 2 {
+	if db.Stats().MaxOpenConnections != cap {
 		t.Fatal("runtime pool has no configured limit")
 	}
-	first, err := db.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
+	held := make([]*sql.Conn, 0, cap)
+	defer func() {
+		for _, conn := range held {
+			conn.Close()
+		}
+	}()
+	for range cap {
+		conn, err := db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, conn)
 	}
-	defer first.Close()
-	second, err := db.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 	if err := db.PingContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("pool waiter did not honor cancellation: %v", err)
 	}
-	if db.Stats().OpenConnections > 2 || db.Stats().WaitCount == 0 {
+	if db.Stats().OpenConnections > cap || db.Stats().WaitCount == 0 {
 		t.Fatal("pool limit was bypassed")
 	}
-	first.Close()
-	second.Close()
+	for _, conn := range held {
+		conn.Close()
+	}
 	if err := db.PingContext(t.Context()); err != nil {
 		t.Fatal(err)
 	}

@@ -7,8 +7,8 @@ import (
 )
 
 type Env struct {
-	DBMaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS" envDefault:"8"`
-	DBMaxIdleConns    int           `env:"DB_MAX_IDLE_CONNS" envDefault:"2"`
+	DBMaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS"`
+	DBMaxIdleConns    int           `env:"DB_MAX_IDLE_CONNS"`
 	DBConnMaxLifetime time.Duration `env:"DB_CONN_MAX_LIFETIME" envDefault:"30m"`
 	DBConnMaxIdleTime time.Duration `env:"DB_CONN_MAX_IDLE_TIME" envDefault:"5m"`
 	PostgresHost      string        `env:"POSTGRES_HOST" envDefault:"localhost"`
@@ -21,7 +21,15 @@ type Env struct {
 }
 
 func InitConfig() (*Env, error) {
-	var cfg Env
+	return initConfig(8, 2)
+}
+
+func InitImportConfig() (*Env, error) {
+	return initConfig(4, 1)
+}
+
+func initConfig(maxOpen, maxIdle int) (*Env, error) {
+	cfg := Env{DBMaxOpenConns: maxOpen, DBMaxIdleConns: maxIdle}
 	err := env.Parse(&cfg)
 	if err != nil {
 		return nil, err

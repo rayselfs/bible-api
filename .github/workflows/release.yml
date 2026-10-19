@@ -14,10 +14,17 @@ on:
       - internal/**
       - migrations/**
       - scripts/smoke-release.sh
+      - scripts/release-target.sh
   workflow_dispatch:
     inputs:
+      target:
+        description: API release or import image preparation (does not start import)
+        required: true
+        default: api
+        type: choice
+        options: [api, import]
       confirmation:
-        description: Type deploy-bible-api-production
+        description: Type deploy-bible-api-production or prepare-bible-import-image
         required: true
         type: string
       fail_openapi_before_pointer:
@@ -69,6 +76,9 @@ jobs:
       ACR_LOGIN_SERVER: alive.azurecr.io
       IMAGE_REPOSITORY: alive/bible-api
       RESOURCE_GROUP: alive
+      RELEASE_TARGET: ${{ inputs.target || 'api' }}
+      IMPORT_JOB_NAME: bible-import
+      BIBLE_IMPORT_AZURE_CLIENT_ID: ${{ vars.BIBLE_IMPORT_AZURE_CLIENT_ID }}
       API_APP_NAME: bible-api
       DAPR_APP_ID: bible-api
       API_GATEWAY_APP_NAME: api-gateway
@@ -79,28 +89,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate release configuration
-        run: |
-          [[ "$GITHUB_REF" == "refs/heads/main" ]]
-          [[ "$RELEASE_CONFIRMATION" == "deploy-bible-api-production" ]]
-          [[ "$API_APP_NAME" == "bible-api" ]]
-          [[ "$DAPR_APP_ID" == "bible-api" ]]
-          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
-            test -n "${!name:-}" || { echo "Missing repository variable: ${name}" >&2; exit 1; }
-          done
+        id: target
+        run: ./scripts/release-target.sh validate >> "$GITHUB_OUTPUT"
       - name: Set image tag
         run: echo "IMAGE_TAG=main-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
       - name: Sign in to Azure with OIDC
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          client-id: ${{ steps.target.outputs.client_id }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - run: az extension add --name containerapp --upgrade --yes
       - name: Verify current app identity
+        if: ${{ env.RELEASE_TARGET == 'api' }}
         run: |
           app_id="$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --query properties.configuration.dapr.appId -o tsv --only-show-errors)"
           [[ "$app_id" == "$DAPR_APP_ID" ]]
       - name: Capture rollback revision
+        if: ${{ env.RELEASE_TARGET == 'api' }}
         run: |
           resolve_image_ref() {
             local image="$1"
@@ -133,10 +139,15 @@ jobs:
           digest="$(az acr repository show --name "$ACR_NAME" --image "${IMAGE_REPOSITORY}:${IMAGE_TAG}" --query digest -o tsv --only-show-errors)"
           [[ "$digest" == sha256:* ]]
           echo "IMAGE_REF=${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}@${digest}" >> "$GITHUB_ENV"
+      - name: Prepare Bible import image
+        if: ${{ env.RELEASE_TARGET == 'import' }}
+        run: ./scripts/release-target.sh prepare-import
       - name: Update Bible API image
+        if: ${{ env.RELEASE_TARGET == 'api' }}
         id: deploy_runtime
         run: az containerapp update -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --image "$IMAGE_REF" --only-show-errors --output none
       - name: Wait for Bible API revision
+        if: ${{ env.RELEASE_TARGET == 'api' }}
         run: |
           for attempt in {1..60}; do
             latest="$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --query properties.latestRevisionName -o tsv --only-show-errors)"
@@ -150,14 +161,16 @@ jobs:
           echo "Bible API did not become ready" >&2
           exit 1
       - name: Smoke Bible API release
+        if: ${{ env.RELEASE_TARGET == 'api' }}
         run: ./scripts/smoke-release.sh
       - name: Export production release
+        if: ${{ env.RELEASE_TARGET == 'api' }}
         id: release_outputs
         run: |
           echo "commit=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
       - name: Roll back failed runtime
-        if: ${{ failure() && steps.deploy_runtime.outcome != 'skipped' }}
+        if: ${{ failure() && env.RELEASE_TARGET == 'api' && steps.deploy_runtime.outcome != 'skipped' }}
         run: |
           az containerapp revision copy -g "$RESOURCE_GROUP" -n "$API_APP_NAME" \
             --from-revision "$PREVIOUS_READY_REVISION" --image "$PREVIOUS_IMAGE_REF" \
@@ -175,11 +188,12 @@ jobs:
           echo "Bible API rollback did not become ready" >&2
           exit 1
       - name: Verify rolled back runtime
-        if: ${{ failure() && steps.deploy_runtime.outcome != 'skipped' }}
+        if: ${{ failure() && env.RELEASE_TARGET == 'api' && steps.deploy_runtime.outcome != 'skipped' }}
         run: ./scripts/smoke-release.sh
 
   publish_openapi:
     needs: deploy
+    if: ${{ needs.deploy.outputs.commit != '' }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
