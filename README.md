@@ -1,5 +1,9 @@
 # Bible API
 
+The shared PostgreSQL pool is capped at four open and two idle connections per
+process, including server and importer modes. At eight API replicas its ceiling
+is 32 connections; importer executions and rolling revisions need a separate budget.
+
 A modern, RESTful Bible API built with Go. This API provides access to Bible content across multiple versions with semantic search capabilities powered by pgvector and OpenAI embeddings.
 
 ## 🚀 Features

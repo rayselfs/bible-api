@@ -92,9 +92,6 @@ func runImport() {
 	database.Connect(cfg)
 	defer database.Close()
 
-	database.Connect(cfg)
-	defer database.Close()
-
 	// Execute import based on flags
 	if hasDir {
 		// Mode 1: Import all JSON files from directory

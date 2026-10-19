@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 
@@ -27,8 +28,18 @@ func Connect(cfg *configs.Env) {
 	if err != nil {
 		appLogger.Fatalf("Failed to connect to database: %v", err)
 	}
+	sqlDB, err := DB.DB()
+	if err != nil {
+		appLogger.Fatal("Failed to configure database connection pool")
+	}
+	configurePool(sqlDB)
 
 	appLogger.Info("Database connection successful")
+}
+
+func configurePool(db *sql.DB) {
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
 }
 
 // buildDSN constructs PostgreSQL connection string from config
