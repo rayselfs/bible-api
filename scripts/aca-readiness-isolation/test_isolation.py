@@ -93,11 +93,47 @@ class IsolationTests(unittest.TestCase):
             def cli(self, *args): return self.rows
         cloud = Lookup()
         self.assertIsNone(self.m._candidate_replica(self.ctx, cloud, 'bible-ready-target--fault'))
-        cloud.rows = [{'name': 'one'}]
+        cloud.rows = [{'name': 'one', 'properties': {'containers': [{'name': 'fixture', 'started': True, 'ready': False}]}}]
         self.assertEqual(self.m._candidate_replica(self.ctx, cloud, 'bible-ready-target--fault'), 'one')
         cloud.rows.append({'name': 'two'})
         with self.assertRaises(ValueError):
             self.m._candidate_replica(self.ctx, cloud, 'bible-ready-target--fault')
+
+    def test_candidate_waits_for_literal_fixture_started_not_ready(self):
+        class Lookup:
+            def cli(self, *args): return self.rows
+        cloud = Lookup()
+        for containers in (None, [], [{'name': 'fixture'}],
+                           [{'name': 'fixture', 'started': False}],
+                           [{'name': 'fixture', 'started': 'true'}],
+                           [{'name': 'bible-api', 'started': True}]):
+            cloud.rows = [{'name': 'one', 'properties': {'containers': containers}}]
+            with self.subTest(containers=containers):
+                self.assertIsNone(self.m._candidate_replica(self.ctx, cloud, 'fault'))
+        cloud.rows = [{'name': 'one'}]
+        self.assertIsNone(self.m._candidate_replica(self.ctx, cloud, 'fault'))
+        cloud.rows[0]['properties'] = {'containers': [{'name': 'fixture', 'started': True, 'ready': False}]}
+        self.assertEqual(self.m._candidate_replica(self.ctx, cloud, 'fault'), 'one')
+
+    def test_management_diagnostics_are_safe_in_either_output_stream(self):
+        for stream in ('stdout', 'stderr'):
+            message = ('WebSocketBadStatusException: Handshake status 409; credential=secret '
+                       'https://private.example/token?sig=secret; Container not running')
+            with self.subTest(stream=stream), self.assertRaises(self.m.ManagementCommandFailure) as caught:
+                self.m.bounded([sys.executable, '-c',
+                    f'import sys; print({message!r}, file=sys.{stream}); sys.exit(7)'])
+            diagnostic = caught.exception.diagnostic
+            self.assertEqual(diagnostic['exitCode'], 7)
+            self.assertEqual(diagnostic['handshakeStatus'], 409)
+            self.assertEqual(diagnostic['containerNotRunning'], True)
+            self.assertEqual(diagnostic[stream+'Bytes'], len((message+'\n').encode()))
+            self.assertEqual(diagnostic[('stderr' if stream == 'stdout' else 'stdout')+'Bytes'], 0)
+            for secret in ('secret', 'private.example', 'token', 'credential'):
+                self.assertNotIn(secret, json.dumps(diagnostic))
+        with self.assertRaises(self.m.ManagementCommandFailure) as caught:
+            self.m.bounded([sys.executable, '-c', 'import sys; print("unrelated status 401"); sys.exit(1)'])
+        self.assertIsNone(caught.exception.diagnostic['handshakeStatus'])
+        self.assertFalse(caught.exception.diagnostic['containerNotRunning'])
 
     def test_bad_baseline_stops_before_fault_admission(self):
         samples = [{'phase': 'baseline', 'mono': i*2, 'version': 1+i%2, 'status': 200, 'valid': True} for i in range(31)]

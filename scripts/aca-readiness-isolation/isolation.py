@@ -251,9 +251,10 @@ def bind_fatal(path):
 
 
 class ManagementCommandFailure(RuntimeError):
-    def __init__(self, reason):
+    def __init__(self, reason, diagnostic=None):
         super().__init__('Management command failed ('+reason+'); result UNKNOWN')
         self.reason = reason
+        self.diagnostic = diagnostic
 
 
 def bounded(command, timeout=90, data=None, input_fd=None):
@@ -272,7 +273,13 @@ def bounded(command, timeout=90, data=None, input_fd=None):
                  'ContainerAppRevisionNotFound': 'not_found', 'AuthorizationFailed': 'forbidden',
                  'Forbidden': 'forbidden', 'TooManyRequests': 'throttled', 'Throttled': 'throttled'}
         reason = codes.get(code.group(1), 'unknown') if code else 'unknown'
-        raise ManagementCommandFailure(reason)
+        output = (stdout or '')+'\n'+(stderr or '')
+        handshake = re.search(r'WebSocketBadStatusException: Handshake status ([1-5][0-9]{2})\b', output)
+        diagnostic = {'exitCode': process.returncode,
+                      'stdoutBytes': len((stdout or '').encode()), 'stderrBytes': len((stderr or '').encode()),
+                      'handshakeStatus': int(handshake.group(1)) if handshake else None,
+                      'containerNotRunning': 'container not running' in output.lower()}
+        raise ManagementCommandFailure(reason, diagnostic)
     return stdout
 
 
@@ -791,7 +798,11 @@ def _candidate_replica(ctx, cloud, revision):
             return None
         raise
     require(len(rows) <= 1, 'Unexpected scale; acceptance UNKNOWN')
-    return rows[0]['name'] if rows else None
+    if rows:
+        containers = (rows[0].get('properties') or {}).get('containers') or []
+        if any(c.get('name') == 'fixture' and c.get('started') is True for c in containers):
+            return rows[0]['name']
+    return None
 
 
 def main():
@@ -836,6 +847,9 @@ if __name__ == '__main__':
         # Static error reasons only; no CLI output, resource payload, or fixture secrets.
         folder = Path(os.environ.get('ISOLATION_OUTPUT', 'isolation-evidence'))
         folder.mkdir(parents=True, exist_ok=True)
-        write_json(folder, 'stopped.json', {'result': 'UNKNOWN', 'reason': str(exc)})
+        stopped = {'result': 'UNKNOWN', 'reason': str(exc)}
+        if isinstance(exc, ManagementCommandFailure):
+            stopped['managementDiagnostic'] = exc.diagnostic
+        write_json(folder, 'stopped.json', stopped)
         print('Isolation stopped: '+str(exc), file=sys.stderr)
         sys.exit(1)
