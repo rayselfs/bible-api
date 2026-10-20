@@ -364,6 +364,15 @@ class Cloud:
         return console_result(0, output, nonce)
 
 
+def candidate_fault_armed(cloud, folder, revision, replica):
+    state = cloud.control('bible-ready-target', revision, replica, 'state')
+    # Persist the controlled fixture response before a capability failure aborts the run.
+    write_json(folder, revision+'-state.json', state)
+    require(not state.get('problem'), 'Candidate fault capability UNKNOWN')
+    rows = state.get('observations') or []
+    return state.get('armed') and state.get('held') and rows and rows[-1]['health'] == 200 and rows[-1]['ready'] == 503
+
+
 def wait_for(predicate, seconds, label):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -723,12 +732,7 @@ def run_acceptance(ctx, cloud, manifests, folder):
             replica = wait_for(lambda: _candidate_replica(ctx, cloud, candidate), 300, 'candidate replica')
             logs(candidate, replica, 'bible-api')
             fatal_paths.append(logs(candidate, replica, 'daprd'))
-            def armed():
-                state = control(candidate, replica, 'state')
-                require(not state.get('problem'), 'Candidate fault capability UNKNOWN')
-                rows = state.get('observations') or []
-                return state.get('armed') and state.get('held') and rows and rows[-1]['health'] == 200 and rows[-1]['ready'] == 503
-            wait_for(armed, 90, 'candidate-only fault')
+            wait_for(lambda: candidate_fault_armed(cloud, folder, candidate, replica), 90, 'candidate-only fault')
             require(cloud.get(ctx.app_id('bible-ready-target'))['properties']['latestReadyRevisionName'] == serving,
                     'Old revision lost authority before fault window')
             control(candidate, replica, 'phase-'+fault_phase)
