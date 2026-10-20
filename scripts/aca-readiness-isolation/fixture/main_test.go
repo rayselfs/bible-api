@@ -170,3 +170,33 @@ func TestPhaseAcknowledgementWaitsForPreviousRequest(t *testing.T) {
 		t.Fatal("phase attribution corrupted")
 	}
 }
+
+func TestControlWaitsBeyondTheSampleRequestDeadline(t *testing.T) {
+	f := newFixture("caller", "123-1", "bible-ready-caller--baseline")
+	f.phase = "baseline"
+	f.flight.Lock()
+	server := httptest.NewServer(f.handler())
+	defer server.Close()
+	previous := client.Transport
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", server.Listener.Addr().String())
+	}}
+	client.Transport = transport
+	defer func() { client.Transport = previous; transport.CloseIdleConnections() }()
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(2100 * time.Millisecond)
+		f.flight.Unlock()
+		close(released)
+	}()
+	err := control("phase-prepare_fault", "0123456789abcdef")
+	<-released
+	if err != nil {
+		t.Fatalf("phase control must outlast an in-flight two-second sample: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.phase != "prepare_fault" || client.Timeout != 2*time.Second {
+		t.Fatal("phase not acknowledged or sample deadline changed")
+	}
+}
