@@ -63,6 +63,32 @@ class IsolationTests(unittest.TestCase):
                     f'import sys; print("ERROR: ({code}) credential=secret", file=sys.stderr); sys.exit(1)'])
             self.assertNotIn('secret', str(caught.exception))
 
+    def test_candidate_discovery_waits_only_for_not_found(self):
+        module = self.m
+        class Lookup:
+            code = 'RevisionNotFound'
+            def cli(self, *args):
+                return json.loads(module.bounded([sys.executable, '-c',
+                    f'import sys; print("ERROR: ({self.code}) hidden", file=sys.stderr); sys.exit(1)']))
+        cloud = Lookup()
+        self.assertIsNone(self.m._candidate_replica(self.ctx, cloud, 'bible-ready-target--fault'))
+        for code in ('AuthorizationFailed', 'TooManyRequests', 'Unexpected'):
+            cloud.code = code
+            with self.subTest(code=code), self.assertRaises(RuntimeError):
+                self.m._candidate_replica(self.ctx, cloud, 'bible-ready-target--fault')
+
+    def test_candidate_discovery_keeps_single_replica_boundary(self):
+        class Lookup:
+            rows = []
+            def cli(self, *args): return self.rows
+        cloud = Lookup()
+        self.assertIsNone(self.m._candidate_replica(self.ctx, cloud, 'bible-ready-target--fault'))
+        cloud.rows = [{'name': 'one'}]
+        self.assertEqual(self.m._candidate_replica(self.ctx, cloud, 'bible-ready-target--fault'), 'one')
+        cloud.rows.append({'name': 'two'})
+        with self.assertRaises(ValueError):
+            self.m._candidate_replica(self.ctx, cloud, 'bible-ready-target--fault')
+
     def test_bad_baseline_stops_before_fault_admission(self):
         samples = [{'phase': 'baseline', 'mono': i*2, 'version': 1+i%2, 'status': 200, 'valid': True} for i in range(31)]
         self.m.validate_baseline_requests({'samples': samples})

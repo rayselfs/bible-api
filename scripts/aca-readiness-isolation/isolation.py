@@ -250,6 +250,12 @@ def bind_fatal(path):
     return False
 
 
+class ManagementCommandFailure(RuntimeError):
+    def __init__(self, reason):
+        super().__init__('Management command failed ('+reason+'); result UNKNOWN')
+        self.reason = reason
+
+
 def bounded(command, timeout=90, data=None, input_fd=None):
     process = subprocess.Popen(command, stdin=input_fd if input_fd is not None else subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
@@ -266,7 +272,7 @@ def bounded(command, timeout=90, data=None, input_fd=None):
                  'ContainerAppRevisionNotFound': 'not_found', 'AuthorizationFailed': 'forbidden',
                  'Forbidden': 'forbidden', 'TooManyRequests': 'throttled', 'Throttled': 'throttled'}
         reason = codes.get(code.group(1), 'unknown') if code else 'unknown'
-        raise RuntimeError('Management command failed ('+reason+'); result UNKNOWN')
+        raise ManagementCommandFailure(reason)
     return stdout
 
 
@@ -767,7 +773,13 @@ def run_acceptance(ctx, cloud, manifests, folder):
 
 
 def _candidate_replica(ctx, cloud, revision):
-    rows = cloud.cli('containerapp', 'replica', 'list', '-g', ctx.group, '-n', 'bible-ready-target', '--revision', revision)
+    try:
+        rows = cloud.cli('containerapp', 'replica', 'list', '-g', ctx.group, '-n', 'bible-ready-target', '--revision', revision)
+    except ManagementCommandFailure as error:
+        if error.reason == 'not_found':
+            # An accepted PUT can precede revision discovery.
+            return None
+        raise
     require(len(rows) <= 1, 'Unexpected scale; acceptance UNKNOWN')
     return rows[0]['name'] if rows else None
 
