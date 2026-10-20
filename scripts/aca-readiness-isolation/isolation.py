@@ -120,7 +120,7 @@ def plan(ctx, bible_image, helper_image):
     caller = app([caller_fixture], 1, 1, {**registry, 'dapr': {'enabled': True, 'appId': 'bible-ready-caller', 'appPort': 8081, 'appProtocol': 'http'}})
     return {'group': {'location': 'eastasia', 'tags': ctx.tags()},
             'environment': {'location': 'eastasia', 'tags': ctx.tags(), 'identity': {'type': 'SystemAssigned'},
-                            'properties': {'appLogsConfiguration': {'destination': 'none'},
+                            'properties': {'appLogsConfiguration': {'destination': None},
                                            'infrastructureResourceGroup': ctx.infrastructure_group,
                                            'workloadProfiles': [{'name': 'Consumption', 'workloadProfileType': 'Consumption'}]}},
             'target': target, 'pg': pg, 'caller': caller,
