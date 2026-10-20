@@ -308,7 +308,9 @@ class Cloud:
         az = ['az', 'containerapp', 'exec', '-g', self.ctx.group, '-n', app, '--revision', revision,
               '--replica', replica, '--container', 'postgres' if app == 'bible-ready-pg' else 'fixture', '--command', command]
         # One bounded console call. The fixture emits one nonce frame; ANSI/prompt text is not health evidence.
-        return bounded(['script', '-q', '-e', '-c', shlex.join(az), '/dev/null'], 90)
+        args = ['script', '-q', '/dev/null', *az] if sys.platform == 'darwin' else [
+            'script', '-q', '-e', '-c', shlex.join(az), '/dev/null']
+        return bounded(args, 90)
 
     def control(self, app, revision, replica, action):
         require(action in ('state', 'release') or action in ('phase-'+p for p in PHASES), 'Unexpected control')

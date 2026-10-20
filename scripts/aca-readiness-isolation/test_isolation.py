@@ -112,6 +112,23 @@ class IsolationTests(unittest.TestCase):
             with self.subTest(resource=resource), self.assertRaises(ValueError):
                 cloud.put(resource, {})
 
+    def test_console_uses_platform_script_syntax_without_changing_target(self):
+        cloud = self.m.Cloud(self.ctx)
+        for platform in ('darwin', 'linux'):
+            with self.subTest(platform=platform), patch.object(self.m.sys, 'platform', platform), \
+                    patch.object(self.m, 'bounded', return_value='frame') as run:
+                self.assertEqual(cloud.console('bible-ready-caller', 'bible-ready-caller--candidate',
+                                              'bible-ready-caller--candidate-replica', '/fixture client state abc'),
+                                 'frame')
+                args, timeout = run.call_args.args
+                self.assertEqual(timeout, 90)
+                if platform == 'darwin':
+                    self.assertEqual(args[:4], ['script', '-q', '/dev/null', 'az'])
+                    self.assertEqual(args[-1], '/fixture client state abc')
+                else:
+                    self.assertEqual(args[:4], ['script', '-q', '-e', '-c'])
+                    self.assertIn('bible-ready-caller--candidate-replica', args[4])
+
     def test_preview_is_pure_and_never_claims_resolved_principal(self):
         import tempfile
         with tempfile.TemporaryDirectory() as folder:

@@ -82,6 +82,22 @@ the reviewed role. Missing/stale/mismatched review stops and cleans. This tag
 is a coordination/audit marker, not an Azure security lock. No routine human
 confirmation is needed beyond the already authorized coordinator decision.
 
+### Coordinator execution
+
+If the CI identity lacks isolation permissions, the authorized coordinator may
+run these same commands with its existing Azure login from a clean checkout of
+the exact merged main commit. Record this as coordinator execution, not a CI
+run. Use a real preview workflow run/attempt for resource naming; verify the
+checkout and release receipt independently because the `GITHUB_*` metadata is
+not authorization. Both Linux and macOS console transports preserve command
+failure status.
+
+Keep `GITHUB_ENV` private and propagate its generated values between commands.
+All fresh slot, budget, principal-review and resource-ownership checks still
+apply. Run `cleanup` and `cleanup-helper` after success or failure, and reconcile
+interrupted cleanup before closing the run. Do not widen the production CI
+identity or substitute an unmerged production image.
+
 ## What is measured
 
 The old and new revisions use the same merged Bible digest, distinguished by
