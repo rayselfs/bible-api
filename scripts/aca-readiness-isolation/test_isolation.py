@@ -55,6 +55,27 @@ class IsolationTests(unittest.TestCase):
                     'bible-ready-caller--baseline', 'bible-ready-caller--baseline-replica', '/fixture client state nonce')
             self.assertEqual(output, 'remote frame\n')
 
+    def test_management_failure_is_classified_without_raw_stderr(self):
+        for code, reason in [('RevisionNotFound', 'not_found'), ('AuthorizationFailed', 'forbidden'),
+                             ('TooManyRequests', 'throttled'), ('Unexpected', 'unknown')]:
+            with self.subTest(code=code), self.assertRaisesRegex(RuntimeError, r'failed \('+reason+r'\); result UNKNOWN') as caught:
+                self.m.bounded([sys.executable, '-c',
+                    f'import sys; print("ERROR: ({code}) credential=secret", file=sys.stderr); sys.exit(1)'])
+            self.assertNotIn('secret', str(caught.exception))
+
+    def test_bad_baseline_stops_before_fault_admission(self):
+        samples = [{'phase': 'baseline', 'mono': i*2, 'version': 1+i%2, 'status': 200, 'valid': True} for i in range(31)]
+        self.m.validate_baseline_requests({'samples': samples})
+        for change in ('timeout', 'problem', 'empty', 'short', 'gap'):
+            state = {'samples': copy.deepcopy(samples)}
+            if change == 'timeout': state['samples'][8]['status'] = 0
+            if change == 'problem': state['problem'] = 'capacity exceeded'
+            if change == 'empty': state['samples'] = []
+            if change == 'short': state['samples'] = state['samples'][:10]
+            if change == 'gap': state['samples'][8]['mono'] += 2
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.m.validate_baseline_requests(state)
+
     def test_context_rejects_untrusted_ref_repository_and_noncanonical_ids(self):
         for key, bad in [('GITHUB_REF', 'refs/heads/feature'), ('GITHUB_REPOSITORY', 'fork/bible-api'),
                          ('GITHUB_RUN_ID', '../alive'), ('GITHUB_RUN_ID', '01'),

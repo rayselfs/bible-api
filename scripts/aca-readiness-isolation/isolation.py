@@ -195,6 +195,17 @@ def assess(samples, routes, phases, bind_failure):
     return 'PASS'
 
 
+def validate_baseline_requests(state):
+    records = [s for s in state.get('samples', []) if s.get('phase') == 'baseline']
+    require(not state.get('problem') and records and
+            all(s.get('status') == 200 and s.get('valid') is True for s in records),
+            'Baseline request failure; fault injection forbidden')
+    require({s.get('version') for s in records} == {1, 2} and
+            records[-1]['mono'] - records[0]['mono'] >= 60 and
+            all(0 <= b['mono'] - a['mono'] <= 3 for a, b in zip(records, records[1:])),
+            'Baseline request window incomplete; fault injection forbidden')
+
+
 def console_result(code, output, nonce):
     frames = re.findall(r'ISOLATION_' + re.escape(nonce) + r'=([A-Za-z0-9+/=]+)', output)
     if code or len(frames) != 1 or len(frames[0]) > 8_000_000:
@@ -243,13 +254,19 @@ def bounded(command, timeout=90, data=None, input_fd=None):
     process = subprocess.Popen(command, stdin=input_fd if input_fd is not None else subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        stdout, _ = process.communicate(data, timeout=timeout)
+        stdout, stderr = process.communicate(data, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         os.killpg(process.pid, signal.SIGTERM)
         process.communicate()
         raise RuntimeError('Management command timed out; result UNKNOWN') from exc
     if process.returncode:
-        raise RuntimeError('Management command failed; result UNKNOWN')
+        code = re.search(r'(?m)^ERROR: \(([A-Za-z]+)\)', stderr or '')
+        codes = {'ResourceNotFound': 'not_found', 'ResourceGroupNotFound': 'not_found',
+                 'ContainerAppNotFound': 'not_found', 'RevisionNotFound': 'not_found',
+                 'ContainerAppRevisionNotFound': 'not_found', 'AuthorizationFailed': 'forbidden',
+                 'Forbidden': 'forbidden', 'TooManyRequests': 'throttled', 'Throttled': 'throttled'}
+        reason = codes.get(code.group(1), 'unknown') if code else 'unknown'
+        raise RuntimeError('Management command failed ('+reason+'); result UNKNOWN')
     return stdout
 
 
@@ -665,6 +682,10 @@ def run_acceptance(ctx, cloud, manifests, folder):
             prepare_phase = 'prepare_fault' if suffix == 'fault' else 'prepare_rollback_fault'
             cloud.control('bible-ready-caller', caller, caller_replica, 'phase-'+prepare_phase)
             expected[prepare_phase] = {'seconds': 0, 'revision': serving}
+            if suffix == 'fault':
+                baseline_state = cloud.control('bible-ready-caller', caller, caller_replica, 'state')
+                write_json(folder, 'baseline-caller.json', baseline_state)
+                validate_baseline_requests(baseline_state)
             current = cloud.get(ctx.app_id('bible-ready-target'))['properties']
             require(current['latestRevisionName'] == current['latestReadyRevisionName'] == serving,
                     'Another revision superseded the serving baseline')
