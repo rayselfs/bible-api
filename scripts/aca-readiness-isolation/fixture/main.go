@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,13 +25,15 @@ var client = &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{P
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 type sample struct {
-	Phase   string  `json:"phase"`
-	Mono    float64 `json:"mono"`
-	Nonce   string  `json:"nonce"`
-	Status  int     `json:"status"`
-	Version int     `json:"version"`
-	Valid   bool    `json:"valid"`
-	Hash    string  `json:"hash"`
+	Phase     string  `json:"phase"`
+	Mono      float64 `json:"mono"`
+	Nonce     string  `json:"nonce"`
+	Status    int     `json:"status"`
+	Version   int     `json:"version"`
+	Valid     bool    `json:"valid"`
+	Hash      string  `json:"hash"`
+	ElapsedMS int64   `json:"elapsed_ms"`
+	Failure   string  `json:"failure,omitempty"`
 }
 type observation struct {
 	Phase    string  `json:"phase"`
@@ -116,15 +119,24 @@ func status(url string) int {
 	defer resp.Body.Close()
 	return resp.StatusCode
 }
-func (f *fixture) sample(base, phase string, version int) sample {
+func (f *fixture) sample(base, phase string, version int) (s sample) {
+	started := time.Now()
+	defer func() { s.ElapsedMS = time.Since(started).Milliseconds() }()
 	f.mu.Lock()
 	f.sequence++
 	nonce := "iso-" + f.run + "-" + strconv.Itoa(f.sequence)
 	f.mu.Unlock()
-	s := sample{Phase: phase, Mono: time.Since(f.started).Seconds(), Nonce: nonce, Version: version}
+	s = sample{Phase: phase, Mono: time.Since(f.started).Seconds(), Nonce: nonce, Version: version}
 	path := fmt.Sprintf("/v1.0/invoke/bible-ready-target/method/api/bible/v%d/versions?isolation_nonce=%s", version, nonce)
 	resp, err := client.Get(base + path)
 	if err != nil {
+		s.Failure = "transport"
+		var network *net.OpError
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.Failure = "timeout"
+		} else if errors.As(err, &network) && network.Op == "dial" {
+			s.Failure = "connect"
+		}
 		return s
 	}
 	defer resp.Body.Close()

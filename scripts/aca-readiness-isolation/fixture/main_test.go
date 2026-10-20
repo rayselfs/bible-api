@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -198,5 +200,39 @@ func TestControlWaitsBeyondTheSampleRequestDeadline(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.phase != "prepare_fault" || client.Timeout != 2*time.Second {
 		t.Fatal("phase not acknowledged or sample deadline changed")
+	}
+}
+
+func TestSampleRecordsBoundedTransportFailure(t *testing.T) {
+	for _, timeout := range []bool{false, true} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(2200 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+		}))
+		want := "timeout"
+		if !timeout {
+			server.Close()
+			want = "connect"
+		}
+		f := newFixture("caller", "123-1", "bible-ready-caller--baseline")
+		s := f.sample(server.URL, "baseline", 1)
+		server.Close()
+		data, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if s.Status != 0 || s.Valid || fields["failure"] != want {
+			t.Fatalf("missing bounded %s classification: %s", want, data)
+		}
+		if timeout && (fields["elapsed_ms"].(float64) < 1800 || fields["elapsed_ms"].(float64) > 3500) {
+			t.Fatalf("two-second sample deadline changed: %s", data)
+		}
+		if strings.Contains(string(data), server.URL) {
+			t.Fatal("transport diagnostic leaked a URL")
+		}
 	}
 }
