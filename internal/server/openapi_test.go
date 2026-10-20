@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/json"
+	"hhc/bible-api/docs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -71,6 +73,7 @@ func TestOpenAPICoversRegisteredRoutes(t *testing.T) {
 
 	want := map[string]string{
 		"/health":                            "get",
+		"/ready":                             "get",
 		"/api/bible/v1/versions":             "get",
 		"/api/bible/v1/content/{version_id}": "get",
 		"/api/bible/v1/vectors/{version_id}": "get",
@@ -101,6 +104,7 @@ func TestOpenAPICoversRegisteredRoutes(t *testing.T) {
 		callers    []string
 	}{
 		"/health get":                            {"Operations", "operations", []string{}},
+		"/ready get":                             {"Operations", "operations", []string{}},
 		"/api/bible/v1/versions get":             {"Public", "public", []string{"hhc-client"}},
 		"/api/bible/v1/content/{version_id} get": {"Public", "public", []string{"hhc-client", "hhc-client-v2"}},
 		"/api/bible/v1/vectors/{version_id} get": {"Public", "public", []string{}},
@@ -156,5 +160,36 @@ func TestOpenAPICoversRegisteredRoutes(t *testing.T) {
 	}
 	if !strings.Contains(vectors.Description, "terminates the already-started 200 stream without a terminal record") {
 		t.Errorf("vectors streaming termination = %q", vectors.Description)
+	}
+}
+
+func TestLegacyReadinessContract(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	for _, name := range []string{"swagger.json", "swagger.yaml"} {
+		data, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "docs", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var spec struct {
+			Paths map[string]map[string]operation `yaml:"paths" json:"paths"`
+		}
+		if name == "swagger.json" {
+			err = json.Unmarshal(data, &spec)
+		} else {
+			err = yaml.Unmarshal(data, &spec)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(spec.Paths["/ready"]["get"].Responses) != 2 {
+			t.Fatal("legacy readiness responses missing")
+		}
+	}
+	var registered struct{ Paths map[string]any }
+	if err := json.Unmarshal([]byte(docs.SwaggerInfo.ReadDoc()), &registered); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registered.Paths["/ready"]; !ok {
+		t.Fatal("runtime Swagger readiness missing")
 	}
 }
