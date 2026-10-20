@@ -36,7 +36,9 @@ done
 if [ "$round" -lt 3 ]; then sleep 2; fi
 done
 '''.replace('URLS', ' '.join(shlex.quote(url) for url in urls)).replace('MARKER', marker)
-    remote = shlex.join(['/bin/sh', '-c', body])
+    # ACA console splits words without shell quoting; keep the shell program in one word.
+    encoded = base64.b64encode(body.encode()).decode()
+    remote = '/bin/sh -c printf${IFS}%s${IFS}' + encoded + '|base64${IFS}-d|/bin/sh'
     command = shlex.join(['az', 'containerapp', 'exec', '-g', os.environ['RESOURCE_GROUP'],
                           '-n', os.environ['API_GATEWAY_APP_NAME'], '--command', remote])
     try:
