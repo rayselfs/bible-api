@@ -9,7 +9,7 @@ import (
 var AddLocaleToVersions = &gormigrate.Migration{
 	ID: "202504251200_ADD_LOCALE_TO_VERSIONS",
 	Migrate: func(tx *gorm.DB) error {
-		return tx.Exec("ALTER TABLE versions ADD COLUMN locale VARCHAR(20)").Error
+		return tx.Exec("ALTER TABLE versions ADD COLUMN IF NOT EXISTS locale VARCHAR(20)").Error
 	},
 	Rollback: func(tx *gorm.DB) error {
 		return tx.Exec("ALTER TABLE versions DROP COLUMN locale").Error
