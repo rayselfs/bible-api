@@ -276,6 +276,15 @@ def bounded(command, timeout=90, data=None, input_fd=None):
     return stdout
 
 
+def unbuffered_az():
+    version = bounded(['az', '--version'], 30)
+    paths = re.findall(r"(?m)^Python location '([^'\n]+)'$", version)
+    require(len(paths) == 1 and Path(paths[0]).is_absolute() and Path(paths[0]).is_file() and os.access(paths[0], os.X_OK),
+            'Azure CLI interpreter unavailable; log capture UNKNOWN')
+    # Homebrew starts Python with -I, which ignores PYTHONUNBUFFERED.
+    return [paths[0], '-I', '-u', '-m', 'azure.cli']
+
+
 class Cloud:
     def __init__(self, ctx):
         self.ctx = ctx
@@ -617,6 +626,7 @@ def provision(ctx, cloud, manifests, folder):
 
 
 def run_acceptance(ctx, cloud, manifests, folder):
+    log_cli = unbuffered_az()
     require(owned(ctx, cloud, live=True) is not None, 'Run environment was not provisioned')
     review = role_plan(ctx, cloud.get(ctx.environment_id))
     require(json.loads((folder/'role-plan.json').read_text()) == review, 'Published role plan changed')
@@ -641,10 +651,9 @@ def run_acceptance(ctx, cloud, manifests, folder):
     def logs(revision, replica, container):
         path = folder/(revision+'-'+container+'.log')
         handle = path.open('w'); handles.append(handle)
-        process = subprocess.Popen(['az', 'containerapp', 'logs', 'show', '-g', ctx.group, '-n', 'bible-ready-target',
+        process = subprocess.Popen([*log_cli, 'containerapp', 'logs', 'show', '-g', ctx.group, '-n', 'bible-ready-target',
                     '--revision', revision, '--replica', replica, '--container', container,
                     '--format', 'json', '--tail', '300', '--follow', 'true', '--only-show-errors'],
-                    env={**os.environ, 'PYTHONUNBUFFERED': '1'},
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         def collect():
             for line in process.stdout:

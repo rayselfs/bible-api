@@ -24,6 +24,16 @@ class IsolationTests(unittest.TestCase):
         self.image = 'alive.azurecr.io/alive/bible-api@sha256:' + 'b' * 64
         self.helper = 'alive.azurecr.io/alive/bible-readiness-fixture@sha256:' + 'c' * 64
 
+    def test_log_child_requires_own_cli_interpreter_and_explicit_unbuffered_mode(self):
+        with patch.object(self.m, 'bounded', return_value="Python location '"+sys.executable+"'\n") as probe:
+            command = self.m.unbuffered_az()
+            self.assertEqual(command, [sys.executable, '-I', '-u', '-m', 'azure.cli'])
+            probe.assert_called_once_with(['az', '--version'], 30)
+        for output in ('', "Python location 'relative'", "Python location '/missing/python'", "Python location '/tmp'",
+                       "Python location '"+sys.executable+"'\nPython location '"+sys.executable+"'"):
+            with self.subTest(output=output), patch.object(self.m, 'bounded', return_value=output):
+                with self.assertRaises(ValueError): self.m.unbuffered_az()
+
     def test_pg_query_survives_console_word_splitting(self):
         sql = "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'old';"
         with tempfile.TemporaryDirectory() as directory:
