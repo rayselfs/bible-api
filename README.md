@@ -23,7 +23,8 @@ A modern, RESTful Bible API built with Go. This API provides access to Bible con
 
 ### Health Check
 
-- `GET /health` - Service health status
+- `GET /health` - Process liveness (unchanged)
+- `GET /ready` - Local Dapr outbound readiness; operational endpoint, not publicly routed
 
 ### Bible Versions
 
@@ -691,3 +692,24 @@ For support and questions, please open an issue in the repository or contact the
 Vector downloads keep their existing 384-dimensional little-endian binary format. Queries and buffered sends honor cancellation so a disconnected or slow consumer cannot retain a PostgreSQL connection indefinitely.
 
 CI uses disposable PostgreSQL 17 + pgvector for pool/stream integration tests. Locally set `BIBLE_TEST_DATABASE_URL` to a disposable loopback fixture and run `go test -race ./... -count=1 -p=1`. The tests create private schemas and synthetic vectors, then remove them. With no fixture URL, integration tests skip; production databases must never be used. Pool defaults remain initial budgets pending representative performance tests.
+
+
+## Dapr readiness and release handoff
+
+`GET /ready` returns `200 {"status":"UP"}` only when local Dapr `/v1.0/healthz/outbound` returns 204 within 500ms. It otherwise returns `503 {"status":"DOWN"}` and never acquires a PG connection. `DAPR_HTTP_PORT` defaults to 3500 (decimal 1..65535); optional `DAPR_API_TOKEN` is forwarded only to loopback. There are no retries, redirects, environment proxies, or fail-open switch. Without a sidecar, use `/health` for local liveness; readiness being 503 is expected. The server starts listening without waiting for Dapr, avoiding an app-channel health deadlock.
+
+This PR does not change production probes, PG settings, pool defaults, replicas, Dapr configuration, or gateway routes. A later infrastructure change can switch only readiness from `/health` to `/ready`, after a merged compatible image and an isolated ACA Dapr-only handoff test. The first image release still uses the old probe and cannot promise uninterrupted handoff. Runtime sidecar restarts on a single serving replica remain a separate availability risk.
+
+Release preflight requires a non-secret repository variable `BIBLE_RELEASE_REVIEW` with a review no older than six hours, for example:
+
+```json
+{"verifiedAt":"2026-10-20T00:00:00+00:00","baselineCommit":"<full deployed source commit>","baselineImage":"alive.azurecr.io/alive/bible-api@sha256:<64 hex>","baselinePoolMaxOpen":8,"importsFrozen":true,"evidence":"<reviewed baseline and compatibility evidence reference>"}
+```
+
+Replace all example values using fresh evidence before a release. The review attests the exact old binary has a finite pool. The workflow checks its digest, source migration/model/DB-startup compatibility, current pool overrides, existing max replicas, import executions, and quiet revisions before creating a candidate. A missing or stale review stops before update. It never adjusts PG or replicas. Coordinate the import freeze (or prove retirement); an execution-list snapshot alone is insufficient. If an import starts during rollout, stop new revisions and reassess; do not terminate it.
+
+The image-only update preserves min 1/max 8/CPU70 request scaling and MaxOpen 8. The guard refuses unexpected scaling, pool overrides or extra potentially running Bible revisions. These checks cover Bible's release boundary, not a certified aggregate PostgreSQL ceiling: concurrent jobs and other services remain separate capacity risks, and observed connection counts are not finite process bounds. Fresh platform health and headroom remain part of release coordination; this change neither raises PG limits nor changes admission controls.
+
+The release captures an active healthy baseline, verifies it through Dapr and public v1/v2 routes, fixes the candidate revision/digest, and requires three complete successful smoke rounds through one bounded console session. HTTP failures are failures; management 403/429/timeouts are UNKNOWN and never pass. No early deactivation of the old revision is issued. A preflight rejection never triggers a copy. Before rollback, the workflow checks its mutation marker, exact run-owned revision/digest/template, current import and Bible revision boundaries and absence of a superseding rollout. Unknown ownership or new import stops without adding a revision. Failed owned runtime rolls back with `revision copy --from-revision` plus the original immutable image, preserving the full original template. Hash comparison verifies all template fields except image and revision suffix, including probes. Smoke uses the original `/health` or `/ready` path. Never roll an old `/health`-only binary into a template requiring `/ready`; do not down-migrate. If rollback cannot be verified, stop further revisions and preserve evidence. OpenAPI publication remains separate from healthy runtime and preserves the last-good pointer.
+
+`./scripts/test-release-workflow.sh` exercises fake Azure runtime gates and the actual remote smoke shell; `./scripts/test-readiness-isolation.sh` runs a pinned public Dapr artifact in a dedicated Docker network, occupies TCP50002, then releases/stops/restarts only that test sidecar. It leaves production untouched and cleans only its own resources. The PG suite checks saturated pools 1/2/8, existing stream cancellation, actual independent old/new/rollback process connections at 16/24/48/72, migration replay against a synthetic already-six-migrations baseline and old-process connection removal. The merged bootstrap fix makes the virgin migration chain compatible with current GORM models; CI also verifies fresh bootstrap and additive-column replay. Isolated handoff DBs use `scripts/readiness-fixture/migrated-bible-baseline.sql`, never a production DB. Both PR CI and main Release verify require the disposable PG fixture. These local tests do not certify ACA Dapr-only routing: failed-candidate/healthy-old continuity, recovery, rollback and per-revision request correlation in isolated ACA remain mandatory before a later production probe change.

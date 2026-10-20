@@ -37,3 +37,29 @@ func TestPoolConfigDefaultsAndValidation(t *testing.T) {
 		t.Fatal("pool overrides not applied")
 	}
 }
+
+func TestDaprPortValidation(t *testing.T) {
+	for _, value := range []string{"0", "65536", "-1", "+3500", " 3500", "0xDAC", "bad"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("DAPR_HTTP_PORT", value)
+			if _, err := InitConfig(); err == nil {
+				t.Fatal("invalid Dapr port accepted")
+			}
+		})
+	}
+}
+
+func TestDaprConfigDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("DAPR_HTTP_PORT", "")
+	t.Setenv("DAPR_API_TOKEN", "")
+	cfg, err := InitConfig()
+	if err != nil || cfg.DaprHTTPPort != 3500 || cfg.DaprAPIToken != "" {
+		t.Fatal("unexpected Dapr defaults")
+	}
+	t.Setenv("DAPR_HTTP_PORT", "12345")
+	t.Setenv("DAPR_API_TOKEN", "fixture-token")
+	cfg, err = InitConfig()
+	if err != nil || cfg.DaprHTTPPort != 12345 || cfg.DaprAPIToken != "fixture-token" {
+		t.Fatal("Dapr overrides not applied")
+	}
+}

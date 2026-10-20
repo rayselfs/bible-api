@@ -145,6 +145,7 @@ func runServer() {
 	r := gin.New()
 	r.Use(server.RequestLogger(), gin.Recovery())
 	api.SetupRoutes(r)
+	r.GET("/ready", server.NewReadinessHandler(cfg.DaprHTTPPort, cfg.DaprAPIToken))
 
 	// Setup Server with timeouts
 	srv := &http.Server{

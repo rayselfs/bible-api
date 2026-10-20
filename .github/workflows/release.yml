@@ -14,6 +14,8 @@ on:
       - internal/**
       - migrations/**
       - scripts/smoke-release.sh
+      - scripts/smoke-release.py
+      - scripts/release-runtime.py
   workflow_dispatch:
     inputs:
       confirmation:
@@ -67,12 +69,13 @@ jobs:
           go test -race ./... -count=1 -p=1
           go vet ./...
           ./scripts/test-release-workflow.sh
+          ./scripts/test-readiness-isolation.sh
           docker build -t bible-api:verify .
 
   deploy:
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: production
     permissions:
       contents: read
@@ -91,9 +94,12 @@ jobs:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      BIBLE_RELEASE_REVIEW: ${{ vars.BIBLE_RELEASE_REVIEW }}
       RELEASE_CONFIRMATION: ${{ github.event_name == 'push' && 'deploy-bible-api-production' || inputs.confirmation }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Validate release configuration
         run: |
           [[ "$GITHUB_REF" == "refs/heads/main" ]]
@@ -112,35 +118,10 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - run: az extension add --name containerapp --upgrade --yes
-      - name: Verify current app identity
-        run: |
-          app_id="$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --query properties.configuration.dapr.appId -o tsv --only-show-errors)"
-          [[ "$app_id" == "$DAPR_APP_ID" ]]
       - name: Capture rollback revision
-        run: |
-          resolve_image_ref() {
-            local image="$1"
-            if [[ "$image" == *@sha256:* ]]; then
-              printf '%s\n' "$image"
-              return
-            fi
-            [[ "$image" == "${ACR_LOGIN_SERVER}/"* ]]
-            local image_spec="${image#${ACR_LOGIN_SERVER}/}"
-            local repository="${image_spec%:*}"
-            local digest
-            digest="$(az acr repository show --name "$ACR_NAME" --image "$image_spec" --query digest -o tsv --only-show-errors)"
-            [[ "$digest" == sha256:* ]]
-            printf '%s/%s@%s\n' "$ACR_LOGIN_SERVER" "$repository" "$digest"
-          }
-
-          revision="$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --query properties.latestReadyRevisionName -o tsv --only-show-errors)"
-          test -n "$revision"
-          image="$(az containerapp revision show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --revision "$revision" --query properties.template.containers[0].image -o tsv --only-show-errors)"
-          test -n "$image"
-          {
-            echo "PREVIOUS_READY_REVISION=$revision"
-            echo "PREVIOUS_IMAGE_REF=$(resolve_image_ref "$image")"
-          } >> "$GITHUB_ENV"
+        run: python3 scripts/release-runtime.py capture
+      - name: Verify healthy rollback baseline
+        run: SMOKE_HEALTH_PATH="$PREVIOUS_READINESS_PATH" ./scripts/smoke-release.sh
       - name: Build and push image
         run: |
           az acr build --registry "$ACR_NAME" --image "${IMAGE_REPOSITORY}:${IMAGE_TAG}" --file Dockerfile .
@@ -151,53 +132,24 @@ jobs:
           echo "IMAGE_REF=${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}@${digest}" >> "$GITHUB_ENV"
       - name: Update Bible API image
         id: deploy_runtime
-        run: |
-          az containerapp update -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --image "$IMAGE_REF" \
-            --min-replicas 1 --max-replicas 8 \
-            --scale-rule-name cpu-scaler --scale-rule-type cpu \
-            --scale-rule-metadata type=Utilization value=70 \
-            --only-show-errors --output none
+        run: python3 scripts/release-runtime.py update
       - name: Wait for Bible API revision
-        run: |
-          for attempt in {1..60}; do
-            latest="$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --query properties.latestRevisionName -o tsv --only-show-errors)"
-            ready="$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --query properties.latestReadyRevisionName -o tsv --only-show-errors)"
-            if [[ -n "$latest" && "$latest" == "$ready" ]]; then
-              image="$(az containerapp revision show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --revision "$ready" --query properties.template.containers[0].image -o tsv --only-show-errors)"
-              [[ "$image" == "$IMAGE_REF" ]] && exit 0
-            fi
-            sleep 10
-          done
-          echo "Bible API did not become ready" >&2
-          exit 1
+        run: python3 scripts/release-runtime.py wait
       - name: Smoke Bible API release
         run: ./scripts/smoke-release.sh
       - name: Export production release
         id: release_outputs
         run: |
+          python3 scripts/release-runtime.py wait
           echo "commit=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
       - name: Roll back failed runtime
-        if: ${{ failure() && steps.deploy_runtime.outcome != 'skipped' }}
-        run: |
-          az containerapp revision copy -g "$RESOURCE_GROUP" -n "$API_APP_NAME" \
-            --from-revision "$PREVIOUS_READY_REVISION" --image "$PREVIOUS_IMAGE_REF" \
-            --revision-suffix "rollback-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --only-show-errors --output none
-          for attempt in {1..60}; do
-            latest="$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --query properties.latestRevisionName -o tsv --only-show-errors)"
-            ready="$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --query properties.latestReadyRevisionName -o tsv --only-show-errors)"
-            if [[ -n "$latest" && "$latest" == "$ready" ]]; then
-              image="$(az containerapp revision show -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --revision "$ready" --query properties.template.containers[0].image -o tsv --only-show-errors)"
-              [[ "$image" == "$PREVIOUS_IMAGE_REF" ]] && exit 0
-            fi
-            sleep 10
-          done
-          echo "Bible API rollback did not become ready" >&2
-          exit 1
+        id: rollback_runtime
+        if: ${{ failure() && env.RUNTIME_UPDATE_STARTED == 'true' }}
+        run: python3 scripts/release-runtime.py rollback
       - name: Verify rolled back runtime
-        if: ${{ failure() && steps.deploy_runtime.outcome != 'skipped' }}
-        run: ./scripts/smoke-release.sh
+        if: ${{ failure() && steps.rollback_runtime.outcome == 'success' }}
+        run: SMOKE_HEALTH_PATH="$PREVIOUS_READINESS_PATH" ./scripts/smoke-release.sh
 
   publish_openapi:
     needs: deploy
