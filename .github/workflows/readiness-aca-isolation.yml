@@ -1,0 +1,146 @@
+name: Bible ACA Readiness Isolation
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_run:
+        description: Successful normal main Production Release run to test (after PR11 and PR10)
+        required: true
+        type: string
+      execute:
+        description: Create the reviewed disposable environment in the assigned coordinator slot
+        required: true
+        default: false
+        type: boolean
+      confirmation:
+        description: For execution type run-bible-isolation; default is preview only
+        default: preview
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bible-api-aca-readiness-isolation
+  cancel-in-progress: false
+
+env:
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  BIBLE_RELEASE_RUN: ${{ inputs.release_run }}
+  BIBLE_ACA_ISOLATION_REVIEW: ${{ vars.BIBLE_ACA_ISOLATION_REVIEW }}
+  ISOLATION_OUTPUT: isolation-evidence
+
+jobs:
+  acceptance:
+    if: github.ref == 'refs/heads/main' && github.repository == 'rayselfs/bible-api'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXECUTE: ${{ inputs.execute }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      # A visible placeholder only in preview; build-helper replaces it before provision.
+      HELPER_IMAGE_REF: alive.azurecr.io/alive/bible-readiness-fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Validate dispatch
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REPOSITORY" = rayselfs/bible-api
+          if [[ "$EXECUTE" == true ]]; then
+            test "$CONFIRMATION" = run-bible-isolation
+          fi
+      - name: Sign in as the existing API docs publisher for read-only Release receipt
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.API_DOCS_AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Resolve successful main Release and fresh public price snapshot
+        run: |
+          python3 scripts/aca-readiness-isolation/isolation.py resolve
+          python3 scripts/aca-readiness-isolation/isolation.py rates
+      - name: Sign in for approved isolated resource operations
+        if: inputs.execute
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - if: inputs.execute
+        run: az extension add --name containerapp --upgrade --yes
+      - name: Write resource-intent preview (helper digest unresolved in preview mode)
+        run: python3 scripts/aca-readiness-isolation/isolation.py preview
+      - name: Verify fresh source, artifact, budget and assigned slot review
+        if: inputs.execute
+        run: python3 scripts/aca-readiness-isolation/isolation.py preflight
+      - name: Build immutable helper from merged main
+        if: inputs.execute
+        run: python3 scripts/aca-readiness-isolation/isolation.py build-helper
+      - name: Provision owned environment without registry grant
+        if: inputs.execute
+        run: python3 scripts/aca-readiness-isolation/isolation.py provision
+      - name: Publish exact principal and role plan before grant
+        if: inputs.execute
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bible-isolation-role-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            isolation-evidence/role-plan.json
+            isolation-evidence/preview.json
+            isolation-evidence/retail-rates.json
+            isolation-evidence/helper-provenance.json
+            isolation-evidence/bible-provenance.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Wait for coordinator exact-role marker, then run candidate-only acceptance
+        if: inputs.execute
+        run: python3 scripts/aca-readiness-isolation/isolation.py execute
+      - name: Preserve preview and acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bible-isolation-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: isolation-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+
+  cleanup:
+    if: always() && inputs.execute && github.ref == 'refs/heads/main' && github.repository == 'rayselfs/bible-api'
+    needs: acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Sign in for exact owned cleanup
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Remove and verify exact owned roles and RGs across this run's attempts
+        run: python3 scripts/aca-readiness-isolation/isolation.py cleanup
+      - name: Remove only proven unshared run-source helper artifacts across attempts
+        if: always()
+        run: python3 scripts/aca-readiness-isolation/isolation.py cleanup-helper
+      - name: Preserve cleanup outcome
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bible-isolation-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: isolation-evidence/
+          if-no-files-found: warn
+          retention-days: 7
