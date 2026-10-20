@@ -50,6 +50,21 @@ grep -q 'DAPR_APP_ID: bible-api' "$release"
 grep -q 'properties.configuration.dapr.appId' "$release"
 grep -q 'az containerapp update -g "\$RESOURCE_GROUP" -n "\$API_APP_NAME" --image "\$IMAGE_REF"' "$release"
 test "$(grep -Fc 'az containerapp update' "$release")" -eq 1
+deploy_body="$(sed -n '/^      - name: Update Bible API image$/,/^      - name: Wait for Bible API revision$/p' "$release" | sed '1d;$d;/^        id:/d;s/^        run: //;s/^          //;/^|$/d')"
+DEPLOY_BODY="$deploy_body" bash -eu -c '
+  RESOURCE_GROUP=alive API_APP_NAME=bible-api
+  IMAGE_REF=alive.azurecr.io/alive/bible-api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  calls=0
+  az() {
+    calls=$((calls + 1))
+    [[ "$*" == "containerapp update -g $RESOURCE_GROUP -n $API_APP_NAME --image $IMAGE_REF --min-replicas 1 --max-replicas 8 --scale-rule-name cpu-scaler --scale-rule-type cpu --scale-rule-metadata type=Utilization value=70 --only-show-errors --output none" ]] || {
+      echo "Bible release must change only the immutable image and reviewed request scaling" >&2
+      return 1
+    }
+  }
+  eval "$DEPLOY_BODY"
+  [[ "$calls" == 1 ]]
+'
 grep -q 'az containerapp revision copy' "$release"
 grep -q -- '--from-revision "\$PREVIOUS_READY_REVISION"' "$release"
 grep -q -- '--image "\$PREVIOUS_IMAGE_REF"' "$release"

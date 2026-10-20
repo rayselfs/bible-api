@@ -151,7 +151,12 @@ jobs:
           echo "IMAGE_REF=${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}@${digest}" >> "$GITHUB_ENV"
       - name: Update Bible API image
         id: deploy_runtime
-        run: az containerapp update -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --image "$IMAGE_REF" --only-show-errors --output none
+        run: |
+          az containerapp update -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --image "$IMAGE_REF" \
+            --min-replicas 1 --max-replicas 8 \
+            --scale-rule-name cpu-scaler --scale-rule-type cpu \
+            --scale-rule-metadata type=Utilization value=70 \
+            --only-show-errors --output none
       - name: Wait for Bible API revision
         run: |
           for attempt in {1..60}; do
