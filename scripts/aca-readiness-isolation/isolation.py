@@ -644,6 +644,7 @@ def run_acceptance(ctx, cloud, manifests, folder):
         process = subprocess.Popen(['az', 'containerapp', 'logs', 'show', '-g', ctx.group, '-n', 'bible-ready-target',
                     '--revision', revision, '--replica', replica, '--container', container,
                     '--format', 'json', '--tail', '300', '--follow', 'true', '--only-show-errors'],
+                    env={**os.environ, 'PYTHONUNBUFFERED': '1'},
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         def collect():
             for line in process.stdout:
