@@ -107,6 +107,9 @@ false before arm, true after the real hold and after release, leaving Bible
 inability to hold the socket, missing managed daprd bind-fatal, app liveness
 failure or a missing continuous600second observation window is UNKNOWN.
 There is no wrong-port fallback, privileged container or host access.
+Each candidate arm poll saves its decoded controlled fixture state before checking
+capability, so a rejected arm retains its exact reason and observations. Missing
+state or failed log retrieval remains UNKNOWN, never an empty successful log.
 
 The caller continuously requests v1/v2 versions with unique synthetic nonce
 queries and validates the single sentinel record. It records version, status, hash,

@@ -73,6 +73,28 @@ class IsolationTests(unittest.TestCase):
                     f'import sys; print("ERROR: ({code}) credential=secret", file=sys.stderr); sys.exit(1)'])
             self.assertNotIn('secret', str(caught.exception))
 
+    def test_candidate_fault_state_survives_rejection_without_weakening_gate(self):
+        class Control:
+            def control(self, app, revision, replica, action):
+                if (app, revision, replica, action) != (
+                        'bible-ready-target', 'bible-ready-target--fault', 'replica', 'state'):
+                    raise AssertionError('wrong candidate control')
+                return self.state
+        cloud = Control()
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            cloud.state = dict(armed=False, held=False, problem='shutdown capability denied status 403', observations=[])
+            with self.assertRaisesRegex(ValueError, 'Candidate fault capability UNKNOWN'):
+                self.m.candidate_fault_armed(cloud, folder, 'bible-ready-target--fault', 'replica')
+            saved = folder / 'bible-ready-target--fault-state.json'
+            self.assertEqual(json.loads(saved.read_text())['problem'], 'shutdown capability denied status 403')
+            cloud.state = dict(armed=True, held=True, problem='', observations=[dict(health=200, ready=200)])
+            self.assertFalse(self.m.candidate_fault_armed(cloud, folder, 'bible-ready-target--fault', 'replica'))
+            self.assertEqual(json.loads(saved.read_text())['observations'][0]['ready'], 200)
+            cloud.state['observations'][0]['ready'] = 503
+            self.assertTrue(self.m.candidate_fault_armed(cloud, folder, 'bible-ready-target--fault', 'replica'))
+            self.assertEqual(json.loads(saved.read_text())['observations'][0]['ready'], 503)
+
     def test_candidate_discovery_waits_only_for_not_found(self):
         module = self.m
         class Lookup:
