@@ -38,7 +38,9 @@ elif key=='containerapp replica list':result=data['replicas']
 elif key=='containerapp job list':result=data['jobs']
 elif key=='containerapp job execution':result=data['executions']
 elif args[:2]==['containerapp','show']:result=data['app']
-elif args[:2]==['containerapp','update']:
+elif args[0]=='rest':
+    payload=json.load(sys.stdin)
+    (p/'patch.json').write_text(json.dumps(payload))
     (p/'updated').touch();result=data['updated_app']
 elif key=='containerapp revision copy':
     (p/'copied').touch();result=data['copied_app']
@@ -77,7 +79,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(self.path)+os.pathsep+os.environ['PATH'], CASE_DIR=str(self.path),
             RESOURCE_GROUP='fixture', API_APP_NAME='bible-api', DAPR_APP_ID='bible-api',
             GITHUB_ENV=str(self.path/'github-env'), RUNNER_TEMP=str(self.path), GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
-            IMAGE_REF=NEW_IMAGE)
+            IMAGE_REF=NEW_IMAGE, AZURE_SUBSCRIPTION_ID='11111111-1111-1111-1111-111111111111')
         self.review = {'baselineCommit': self.baseline_commit, 'baselineImage': IMAGE, 'baselinePoolMaxOpen': 8,
             'importsFrozen': True,
             'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'evidence': 'fixture-reviewed-baseline'}
@@ -179,6 +181,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
     def candidate(self, name, image):
         revision=json.loads(json.dumps(BASE));revision['name']=name
         revision['properties']['template']['containers'][0]['image']=image
+        revision['properties']['template']['containers'][0]['probes'][0]['httpGet']['path']='/ready'
         self.data['revisions'][name]=revision
         self.data['app']['properties'].update(latestRevisionName=name,latestReadyRevisionName=name)
         return revision
@@ -190,9 +193,17 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.run_cli('update')
         self.assertEqual(self.env['CANDIDATE_REVISION'],name)
         calls = [json.loads(line) for line in (self.path/'calls').read_text().splitlines()]
-        updates = [args for args in calls if args[:2] == ['containerapp', 'update']]
-        self.assertEqual(updates, [['containerapp', 'update', '-g', 'fixture', '-n', 'bible-api',
-            '--image', NEW_IMAGE, '--revision-suffix', 'release-123-1', '--only-show-errors', '--output', 'json']])
+        updates = [args for args in calls if args[0] == 'rest']
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0][updates[0].index('--method')+1], 'PATCH')
+        self.assertEqual(updates[0][updates[0].index('--body')+1], '@/dev/stdin')
+        self.assertEqual(updates[0][updates[0].index('--url')+1],
+            'https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/fixture/providers/Microsoft.App/containerApps/bible-api?api-version=2026-01-01')
+        expected = json.loads(json.dumps(TEMPLATE))
+        expected['containers'][0]['image'] = NEW_IMAGE
+        expected['containers'][0]['probes'][0]['httpGet']['path'] = '/ready'
+        expected['revisionSuffix'] = 'release-123-1'
+        self.assertEqual(json.loads((self.path/'patch.json').read_text()), {'properties': {'template': expected}})
         self.candidate(name,NEW_IMAGE)
         self.run_cli('wait')
         self.data['app']['properties']['latestRevisionName']='bible-api--unrelated'
@@ -210,6 +221,45 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.run_cli('update')
         self.candidate(name,NEW_IMAGE)
         self.data['copied_app']={'properties':{'latestRevisionName':'bible-api--rollback-123-1'}}
+
+    def test_ready_baseline_remains_ready_after_repeat_release_and_rollback(self):
+        self.data['revisions']['bible-api--old']['properties']['template']['containers'][0]['probes'][0]['httpGet']['path'] = '/ready'
+        self.prepare_updated_candidate()
+        self.run_cli('wait')
+        self.run_cli('rollback')
+        self.assertEqual(self.data['revisions']['bible-api--rollback-123-1']['properties']['template']['containers'][0]['probes'][0]['httpGet']['path'], '/ready')
+
+    def test_other_candidate_template_changes_block_forward_and_rollback(self):
+        self.prepare_updated_candidate()
+        template = self.data['revisions']['bible-api--release-123-1']['properties']['template']
+        template['containers'][0]['probes'][1]['httpGet']['path'] = '/ready'
+        self.run_cli('wait', False)
+        self.run_cli('rollback', False)
+        self.assertFalse((self.path/'copied').exists())
+
+    def test_accepted_patch_waits_for_own_revision_without_accepting_baseline(self):
+        self.run_cli('capture')
+        self.data['updated_app'] = {}
+        self.run_cli('update')
+        spec=importlib.util.spec_from_file_location('runtime', ROOT/'scripts/release-runtime.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        candidate=json.loads(json.dumps(BASE['properties']))
+        candidate['template']['containers'][0]['image']=NEW_IMAGE
+        candidate['template']['containers'][0]['probes'][0]['httpGet']['path']='/ready'
+        current=json.loads(json.dumps(APP['properties']))
+        active=json.loads(json.dumps(current));active.update(latestRevisionName='bible-api--release-123-1',latestReadyRevisionName='bible-api--release-123-1')
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(module,'app',side_effect=[current,active]), mock.patch.object(module,'revision',return_value=candidate), mock.patch.object(module,'az',return_value=self.data['replicas']), mock.patch.object(module.time,'sleep'):
+            module.wait('bible-api--release-123-1', NEW_IMAGE, module.template_hash(candidate['template']), previous='bible-api--old')
+
+    def test_invalid_patch_target_stops_before_mutation_ownership(self):
+        self.run_cli('capture')
+        for key in ('AZURE_SUBSCRIPTION_ID', 'RESOURCE_GROUP', 'API_APP_NAME'):
+            original = self.env[key]
+            self.env[key] = 'foreign/path'
+            self.run_cli('update', False)
+            self.assertNotIn('RUNTIME_UPDATE_STARTED', self.env)
+            self.assertFalse((self.path/'updated').exists())
+            self.env[key] = original
 
     def test_inactive_terminating_revision_blocks_capture(self):
         orphan=json.loads(json.dumps(BASE));orphan['name']='bible-api--terminating'

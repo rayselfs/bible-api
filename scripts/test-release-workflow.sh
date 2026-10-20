@@ -57,7 +57,7 @@ python3 scripts/test_release_runtime.py
 python3 scripts/test_smoke_release.py
 
 if grep -Eq 'az deployment|terraform|containerapp job|--set-env-vars|--ingress|client-secret|password:' "$release"; then
-  echo 'Bible release must update only the existing Container App image with OIDC' >&2
+  echo 'Bible release must update only the existing Container App image and readiness with OIDC' >&2
   exit 1
 fi
 

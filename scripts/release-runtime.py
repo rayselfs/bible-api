@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Image-only ACA release gates. Never print or save a revision's environment values."""
+"""Pinned image and Dapr-readiness ACA release gates. Never print or save a revision's environment values."""
 import copy
 import datetime
 import hashlib
@@ -17,12 +17,13 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def az(*args):
+def az(*args, body=None):
     try:
         result = subprocess.run(['az', *args, '--only-show-errors', '--output', 'json'],
-                                capture_output=True, text=True, timeout=90)
+                                capture_output=True, text=True, timeout=90,
+                                input=json.dumps(body) if body is not None else None)
         require(result.returncode == 0, 'Azure management result UNKNOWN; no health conclusion')
-        return json.loads(result.stdout)
+        return json.loads(result.stdout or ('{}' if body is not None else ''))
     except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         raise ValueError('Azure management result UNKNOWN; no health conclusion') from exc
 
@@ -75,6 +76,15 @@ def path(template):
     value = probes[0]['httpGet']['path']
     require(value in ('/health', '/ready'), 'Unsupported rollback readiness path')
     return value
+
+
+def ready_template(template):
+    path(template)
+    result = copy.deepcopy(template)
+    for probe in result['containers'][0]['probes']:
+        if probe['type'] == 'Readiness':
+            probe['httpGet']['path'] = '/ready'
+    return result
 
 
 def exported(**values):
@@ -150,7 +160,9 @@ def snapshot():
     data = json.loads(Path(os.environ['BIBLE_ROLLBACK_SNAPSHOT']).read_text())
     require(data['revision'] == os.environ['PREVIOUS_READY_REVISION'] and data['image'] == os.environ['PREVIOUS_IMAGE_REF']
             and data['readinessPath'] == os.environ['PREVIOUS_READINESS_PATH'], 'Rollback snapshot identity changed')
-    require(template_hash(revision(data['revision'])['template']) == data['templateHash'], 'Original template changed')
+    template = revision(data['revision'])['template']
+    require(template_hash(template) == data['templateHash'], 'Original template changed')
+    data['candidateTemplateHash'] = template_hash(ready_template(template))
     return data
 
 
@@ -166,17 +178,34 @@ def update():
     suffix = f"release-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
     require(re.fullmatch(r'release-[0-9]+-[0-9]+', suffix) is not None, 'Invalid release identity')
     candidate = os.environ['API_APP_NAME'] + '--' + suffix
+    template = ready_template(baseline['template'])
+    template['containers'][0]['image'] = image
+    template['revisionSuffix'] = suffix
+    subscription = os.environ['AZURE_SUBSCRIPTION_ID']
+    require(re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', subscription) is not None,
+            'Invalid subscription identity')
+    require(all(re.fullmatch(r'[a-z0-9-]+', os.environ[key]) for key in ('RESOURCE_GROUP', 'API_APP_NAME')),
+            'Invalid application target')
+    url = ('https://management.azure.com/subscriptions/'+subscription+'/resourceGroups/'+os.environ['RESOURCE_GROUP']+
+           '/providers/Microsoft.App/containerApps/'+os.environ['API_APP_NAME']+'?api-version=2026-01-01')
+    # JSON Merge Patch preserves configuration/secrets; stdin avoids saving environment values or reading secrets via YAML.
     # Persist ownership before a possibly ambiguous network result from the mutation.
     exported(CANDIDATE_REVISION=candidate, RUNTIME_UPDATE_STARTED='true')
-    result = az('containerapp', 'update', *target(), '--image', image, '--revision-suffix', suffix)
-    require(result['properties']['latestRevisionName'] == candidate, 'Image update returned another candidate')
+    result = az('rest', '--method', 'PATCH', '--url', url, '--body', '@/dev/stdin',
+                body={'properties': {'template': template}})
+    require(result.get('properties', {}).get('latestRevisionName') in (None, data['revision'], candidate),
+            'Runtime update returned another candidate')
 
 
-def wait(name, image, expected_hash=None):
+def wait(name, image, expected_hash=None, previous=None):
     deadline = time.monotonic() + 600
     for attempt in range(60):
         require(time.monotonic() < deadline, 'Candidate readiness deadline exceeded')
         current = app()
+        if previous is not None and current['latestRevisionName'] == current['latestReadyRevisionName'] == previous:
+            if attempt < 59:
+                time.sleep(10)
+            continue
         require(current['latestRevisionName'] == name, 'Candidate superseded; refusing stale success')
         state = revision(name)
         require(state['template']['containers'][0]['image'] == image, 'Candidate image digest mismatch')
@@ -205,7 +234,7 @@ def rollback():
             'Rollback ownership UNKNOWN or superseded; refusing another revision')
     state = revision(candidate)
     require(state['template']['containers'][0]['image'] == os.environ['IMAGE_REF'] and
-            template_hash(state['template']) == data['templateHash'], 'Candidate ownership/template mismatch')
+            template_hash(state['template']) == data['candidateTemplateHash'], 'Candidate ownership/template mismatch')
     check_release_boundaries(revision(data['revision'])['template'], data['image'], {candidate, data['revision']})
     suffix = f"rollback-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
     result = az('containerapp', 'revision', 'copy', *target(), '--from-revision', data['revision'],
@@ -221,7 +250,8 @@ if __name__ == '__main__':
         command = sys.argv[1]
         if command == 'capture': capture()
         elif command == 'update': update()
-        elif command == 'wait': wait(os.environ['CANDIDATE_REVISION'], os.environ['IMAGE_REF'], snapshot()['templateHash'])
+        elif command == 'wait': wait(os.environ['CANDIDATE_REVISION'], os.environ['IMAGE_REF'],
+                                     snapshot()['candidateTemplateHash'], os.environ['PREVIOUS_READY_REVISION'])
         elif command == 'rollback': rollback()
         else: raise ValueError('Unknown release operation')
     except (ValueError, KeyError, OSError, TypeError) as exc:
