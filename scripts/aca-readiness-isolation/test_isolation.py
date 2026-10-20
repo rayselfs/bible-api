@@ -41,6 +41,20 @@ class IsolationTests(unittest.TestCase):
             self.assertEqual(self.m.pg_sql(self.ctx, Console(), 'revision', 'replica', sql), 0)
             self.assertEqual((root / 'sql').read_text(), sql)
 
+    def test_console_keeps_stdin_open_until_remote_frame(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'script'
+            script.write_text('#!/usr/bin/env python3\nimport select, sys\n'
+                              'if select.select([sys.stdin], [], [], 0.1)[0]:\n'
+                              '    sys.exit("console received premature EOF")\n'
+                              'print("remote frame")\n')
+            script.chmod(0o755)
+            with patch.dict(os.environ, PATH=directory + os.pathsep + os.environ['PATH']):
+                output = self.m.Cloud(self.ctx).console('bible-ready-caller',
+                    'bible-ready-caller--baseline', 'bible-ready-caller--baseline-replica', '/fixture client state nonce')
+            self.assertEqual(output, 'remote frame\n')
+
     def test_context_rejects_untrusted_ref_repository_and_noncanonical_ids(self):
         for key, bad in [('GITHUB_REF', 'refs/heads/feature'), ('GITHUB_REPOSITORY', 'fork/bible-api'),
                          ('GITHUB_RUN_ID', '../alive'), ('GITHUB_RUN_ID', '01'),

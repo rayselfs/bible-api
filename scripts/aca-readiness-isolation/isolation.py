@@ -239,8 +239,8 @@ def bind_fatal(path):
     return False
 
 
-def bounded(command, timeout=90, data=None):
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+def bounded(command, timeout=90, data=None, input_fd=None):
+    process = subprocess.Popen(command, stdin=input_fd if input_fd is not None else subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         stdout, _ = process.communicate(data, timeout=timeout)
@@ -310,7 +310,13 @@ class Cloud:
         # One bounded console call. The fixture emits one nonce frame; ANSI/prompt text is not health evidence.
         args = ['script', '-q', '/dev/null', *az] if sys.platform == 'darwin' else [
             'script', '-q', '-e', '-c', shlex.join(az), '/dev/null']
-        return bounded(args, 90)
+        # An open, idle input pipe prevents premature EOF in the interactive CLI console.
+        reader, writer = os.pipe()
+        try:
+            return bounded(args, 90, input_fd=reader)
+        finally:
+            os.close(reader)
+            os.close(writer)
 
     def control(self, app, revision, replica, action):
         require(action in ('state', 'release') or action in ('phase-'+p for p in PHASES), 'Unexpected control')
