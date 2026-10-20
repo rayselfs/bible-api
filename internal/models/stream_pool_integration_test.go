@@ -9,6 +9,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"hhc/bible-api/internal/testpostgres"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -25,10 +26,10 @@ func vectorTestStore(t *testing.T) (*Store, *gin.Context) {
 		t.Skip("BIBLE_TEST_DATABASE_URL is not configured")
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() != "127.0.0.1" {
+	if err != nil {
 		t.Fatal("integration tests require a loopback PostgreSQL fixture")
 	}
-	admin, err := gorm.Open(postgres.Open(raw), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	admin, err := gorm.Open(postgres.New(postgres.Config{Conn: testpostgres.Open(t, raw)}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func vectorTestStore(t *testing.T) (*Store, *gin.Context) {
 	q := u.Query()
 	q.Set("search_path", schema+",public")
 	u.RawQuery = q.Encode()
-	db, err := gorm.Open(postgres.Open(u.String()), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	db, err := gorm.Open(postgres.New(postgres.Config{Conn: testpostgres.Open(t, u.String())}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}

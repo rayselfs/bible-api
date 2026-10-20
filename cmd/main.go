@@ -84,13 +84,10 @@ func runImport() {
 		os.Exit(1)
 	}
 
-	cfg, err := configs.InitConfig()
+	cfg, err := configs.InitImportConfig()
 	if err != nil {
 		log.Fatalf("error: failed to load config: %v", err)
 	}
-
-	database.Connect(cfg)
-	defer database.Close()
 
 	database.Connect(cfg)
 	defer database.Close()

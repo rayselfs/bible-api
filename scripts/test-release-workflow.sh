@@ -201,3 +201,21 @@ outputs_line="$(grep -n 'id: release_outputs' "$release" | cut -d: -f1)"
 rollback_line="$(grep -n 'name: Roll back failed runtime' "$release" | cut -d: -f1)"
 publish_line="$(grep -n '^  publish_openapi:' "$release" | cut -d: -f1)"
 [[ "$smoke_line" -lt "$outputs_line" && "$outputs_line" -lt "$rollback_line" && "$rollback_line" -lt "$publish_line" ]]
+
+# Exercise target guards and the actual import image mutation with a mock Azure CLI.
+./scripts/test-import-release.sh
+
+# Import selection must bypass all API/Dapr/readiness/rollback and docs effects.
+for step in 'Verify current app identity' 'Capture rollback revision' 'Update Bible API image' 'Wait for Bible API revision' 'Smoke Bible API release' 'Export production release'; do
+  body="$(awk -v name="$step" '$0 == "      - name: " name {found=1;next} found && /^      - / {exit} found {print}' "$release")"
+  grep -Fq "if: \${{ env.RELEASE_TARGET == 'api' }}" <<< "$body"
+done
+for step in 'Roll back failed runtime' 'Verify rolled back runtime'; do
+  body="$(awk -v name="$step" '$0 == "      - name: " name {found=1;next} found && /^      - / {exit} found {print}' "$release")"
+  grep -Fq "env.RELEASE_TARGET == 'api'" <<< "$body"
+done
+grep -Fq "if: \${{ needs.deploy.outputs.commit != '' }}" <<< "$publish_job"
+grep -Fq 'client-id: ${{ steps.target.outputs.client_id }}' "$release"
+grep -Fq 'BIBLE_IMPORT_AZURE_CLIENT_ID: ${{ vars.BIBLE_IMPORT_AZURE_CLIENT_ID }}' "$release"
+grep -Fq 'run: ./scripts/release-target.sh validate >> "$GITHUB_OUTPUT"' "$release"
+grep -Fq 'run: ./scripts/release-target.sh prepare-import' "$release"
