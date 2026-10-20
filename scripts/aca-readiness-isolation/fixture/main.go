@@ -274,7 +274,10 @@ func control(action, nonce string) error {
 		return fmt.Errorf("invalid control")
 	}
 	req, _ := http.NewRequest(method, "http://127.0.0.1:8081"+path, nil)
-	resp, err := client.Do(req)
+	// Phase acknowledgement waits for the previous two-second sample to finish.
+	controlClient := *client
+	controlClient.Timeout = 5 * time.Second
+	resp, err := controlClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("control unavailable")
 	}
