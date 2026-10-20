@@ -51,6 +51,8 @@ class IsolationTests(unittest.TestCase):
 
     def test_manifest_isolates_identity_database_dapr_and_ingress(self):
         plan = self.m.plan(self.ctx, self.image, self.helper)
+        # ARM requires null for disabled logs; the CLI's "none" is not a wire value.
+        self.assertIsNone(plan['environment']['properties']['appLogsConfiguration']['destination'])
         self.assertEqual(plan['target']['properties']['configuration']['activeRevisionsMode'], 'Single')
         self.assertNotIn('ingress', plan['target']['properties']['configuration'])
         self.assertEqual(plan['target']['properties']['configuration']['dapr']['appId'], 'bible-ready-target')
