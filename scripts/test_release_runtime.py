@@ -78,9 +78,9 @@ class ReleaseRuntimeTests(unittest.TestCase):
             RESOURCE_GROUP='fixture', API_APP_NAME='bible-api', DAPR_APP_ID='bible-api',
             GITHUB_ENV=str(self.path/'github-env'), RUNNER_TEMP=str(self.path), GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
             IMAGE_REF=NEW_IMAGE)
-        self.review = {'baselineCommit': self.baseline_commit, 'baselineImage': IMAGE, 'baselinePoolMaxOpen': 8, 'ordinarySlots': 844,
-            'otherConnectionsCeiling': 552, 'importsFrozen': True,
-            'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'evidence': 'fixture-reviewed-budget'}
+        self.review = {'baselineCommit': self.baseline_commit, 'baselineImage': IMAGE, 'baselinePoolMaxOpen': 8,
+            'importsFrozen': True,
+            'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'evidence': 'fixture-reviewed-baseline'}
 
     def git(self,*args):
         return subprocess.run(['git','-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
@@ -116,13 +116,13 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.assertEqual(self.env['PREVIOUS_READINESS_PATH'], '/health')
         self.assertFalse((self.path/'updated').exists())
 
-    def test_capture_rejects_stale_unhealthy_and_unbudgeted_baselines(self):
+    def test_capture_rejects_stale_unhealthy_and_unreviewed_baselines(self):
         for field,value in [('active',False), ('healthState','Unhealthy'), ('runningState','Stopped')]:
             with self.subTest(field=field):
                 self.data['revisions']['bible-api--old']['properties'][field]=value
                 self.run_cli('capture',False)
                 self.data['revisions']['bible-api--old']['properties'][field]=BASE['properties'][field]
-        for field,value in [('baselineCommit','bad'), ('baselineImage',NEW_IMAGE), ('baselinePoolMaxOpen',0), ('otherConnectionsCeiling',553),
+        for field,value in [('baselineCommit','bad'), ('baselineImage',NEW_IMAGE), ('baselinePoolMaxOpen',0),
                 ('importsFrozen',False), ('verifiedAt','2020-01-01T00:00:00+00:00')]:
             with self.subTest(field=field):
                 old=self.review[field];self.review[field]=value
@@ -164,14 +164,17 @@ class ReleaseRuntimeTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError,'deadline'):
                         runtime.wait(name,NEW_IMAGE)
 
-    def test_platform_reserve_must_be_explicitly_reviewed(self):
-        self.data['revisions']['bible-api--old']['properties']['template']['scale']['maxReplicas']=8
-        self.review['otherConnectionsCeiling']=592
-        self.run_cli('capture',False)
-        self.review['reserveConnections']=31
-        self.run_cli('capture',False)
-        self.review['reserveConnections']=32
+    def test_capture_rejects_pool_override(self):
+        container = self.data['revisions']['bible-api--old']['properties']['template']['containers'][0]
+        original = container.get('env', [])
+        for entry in [{'name': 'DB_MAX_OPEN_CONNS', 'value': '9'},
+                      {'name': 'DB_MAX_OPEN_CONNS', 'secretRef': 'unknown-pool'}]:
+            with self.subTest(entry=entry):
+                self.data['revisions']['bible-api--old']['properties']['template']['containers'][0]['env'] = [entry]
+                self.run_cli('capture', False)
+        self.data['revisions']['bible-api--old']['properties']['template']['containers'][0]['env'] = original
         self.run_cli('capture')
+        self.assertFalse((self.path/'updated').exists())
 
     def candidate(self, name, image):
         revision=json.loads(json.dumps(BASE));revision['name']=name

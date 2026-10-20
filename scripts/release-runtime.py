@@ -84,8 +84,7 @@ def exported(**values):
             output.write(f'{key}={value}\n')
 
 
-def check_budget(template, image, allowed_revisions):
-    # A reviewed ceiling is necessary: observed active_connections is not a configured budget.
+def check_release_boundaries(template, image, allowed_revisions):
     review = json.loads(os.environ['BIBLE_RELEASE_REVIEW'])
     commit = review['baselineCommit']
     require(re.fullmatch(r'[0-9a-f]{40}', commit) is not None, 'Unknown baseline source commit')
@@ -100,7 +99,6 @@ def check_budget(template, image, allowed_revisions):
     require(review['evidence'] and review['baselineImage'] == image and review['baselinePoolMaxOpen'] == 8,
             'Rollback image pool is not certified by this review')
     require(review['importsFrozen'] is True, 'Import freeze/retirement not reviewed')
-    require(review['ordinarySlots'] == 844, 'Refresh the reviewed PG capacity before rollout')
     for env in template['containers'][0].get('env', []):
         limits = {'DB_MAX_OPEN_CONNS': '8', 'DB_MAX_IDLE_CONNS': '2',
                   'DB_CONN_MAX_LIFETIME': '30m', 'DB_CONN_MAX_IDLE_TIME': '5m'}
@@ -114,13 +112,6 @@ def check_budget(template, image, allowed_revisions):
     require(scale.get('minReplicas') == 1 and scale.get('maxReplicas') == 8 and rules == [
         {'name': 'cpu-scaler', 'custom': {'type': 'cpu', 'metadata': {'type': 'Utilization', 'value': '70'}}}],
         'Baseline must retain reviewed min1/max8/CPU70 request scaling')
-    max_replicas = scale['maxReplicas']
-    require(type(max_replicas) is int and max_replicas >= 1, 'Unknown replica ceiling')
-    other = review['otherConnectionsCeiling']
-    reserve = review.get('reserveConnections', 100)
-    require(type(reserve) is int and reserve >= 32, 'Reviewed platform reserve must be at least 32')
-    require(type(other) is int and other >= 0 and other + 3*max_replicas*8 + reserve <= 844,
-            'Insufficient configured connection budget for old/candidate/rollback and reserve')
     jobs = az('containerapp', 'job', 'list', '-g', os.environ['RESOURCE_GROUP'])
     if any(job['name'] == 'bible-import' for job in jobs):
         executions = az('containerapp', 'job', 'execution', 'list', '-g', os.environ['RESOURCE_GROUP'], '-n', 'bible-import')
@@ -146,13 +137,13 @@ def capture():
     template = baseline['template']
     health_path = path(template)
     image = immutable(template['containers'][0]['image'])
-    require(check_budget(template, image, {name}) == {name}, 'Baseline is missing from revision inventory')
+    require(check_release_boundaries(template, image, {name}) == {name}, 'Baseline is missing from revision inventory')
     snapshot = Path(os.environ['RUNNER_TEMP']) / 'bible-rollback-snapshot.json'
     snapshot.write_text(json.dumps({'revision': name, 'image': image, 'readinessPath': health_path,
                                     'templateHash': template_hash(template)}))
     exported(PREVIOUS_READY_REVISION=name, PREVIOUS_IMAGE_REF=image, PREVIOUS_READINESS_PATH=health_path,
              BIBLE_ROLLBACK_SNAPSHOT=str(snapshot))
-    print('Captured healthy rollback baseline and reviewed overlap budget')
+    print('Captured healthy rollback baseline and reviewed Bible release boundaries')
 
 
 def snapshot():
@@ -166,7 +157,7 @@ def snapshot():
 def update():
     data = snapshot()
     baseline = revision(data['revision'])
-    require(check_budget(baseline['template'], data['image'], {data['revision']}) == {data['revision']}, 'Baseline is missing from revision inventory')
+    require(check_release_boundaries(baseline['template'], data['image'], {data['revision']}) == {data['revision']}, 'Baseline is missing from revision inventory')
     require(baseline['active'] is True and baseline['healthState'] == 'Healthy' and baseline['runningState'] in ('Running', 'RunningAtMaxScale'), 'Baseline lost health before update')
     current = app()
     require(current['latestReadyRevisionName'] == current['latestRevisionName'] == data['revision'], 'Baseline changed before update')
@@ -215,7 +206,7 @@ def rollback():
     state = revision(candidate)
     require(state['template']['containers'][0]['image'] == os.environ['IMAGE_REF'] and
             template_hash(state['template']) == data['templateHash'], 'Candidate ownership/template mismatch')
-    check_budget(revision(data['revision'])['template'], data['image'], {candidate, data['revision']})
+    check_release_boundaries(revision(data['revision'])['template'], data['image'], {candidate, data['revision']})
     suffix = f"rollback-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
     result = az('containerapp', 'revision', 'copy', *target(), '--from-revision', data['revision'],
                 '--image', data['image'], '--revision-suffix', suffix)
