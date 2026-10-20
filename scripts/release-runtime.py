@@ -106,7 +106,15 @@ def check_budget(template, image, allowed_revisions):
                   'DB_CONN_MAX_LIFETIME': '30m', 'DB_CONN_MAX_IDLE_TIME': '5m'}
         if env['name'] in limits:
             require(env.get('value') == limits[env['name']], 'Unexpected pool override or secret reference')
-    max_replicas = template['scale']['maxReplicas']
+    scale = template['scale']
+    rules = copy.deepcopy(scale.get('rules', []))
+    for rule in rules:
+        if rule.get('custom', {}).get('auth') == []:
+            rule['custom'].pop('auth')
+    require(scale.get('minReplicas') == 1 and scale.get('maxReplicas') == 8 and rules == [
+        {'name': 'cpu-scaler', 'custom': {'type': 'cpu', 'metadata': {'type': 'Utilization', 'value': '70'}}}],
+        'Baseline must retain reviewed min1/max8/CPU70 request scaling')
+    max_replicas = scale['maxReplicas']
     require(type(max_replicas) is int and max_replicas >= 1, 'Unknown replica ceiling')
     other = review['otherConnectionsCeiling']
     reserve = review.get('reserveConnections', 100)

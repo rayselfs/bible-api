@@ -17,7 +17,7 @@ NEW_IMAGE = 'alive.azurecr.io/alive/bible-api@sha256:' + 'b' * 64
 TEMPLATE = {'containers': [{'name': 'bible-api', 'image': IMAGE, 'probes': [
     {'type': 'Readiness', 'httpGet': {'path': '/health', 'port': 9999}},
     {'type': 'Liveness', 'httpGet': {'path': '/health', 'port': 9999}}], 'env': []}],
-    'scale': {'minReplicas': 1, 'maxReplicas': 3}}
+    'scale': {'minReplicas': 1, 'maxReplicas': 8, 'rules': [{'name': 'cpu-scaler', 'custom': {'type': 'cpu', 'metadata': {'type': 'Utilization', 'value': '70'}}}]}}
 BASE = {'name': 'bible-api--old', 'properties': {'active': True, 'healthState': 'Healthy',
     'runningState': 'RunningAtMaxScale', 'template': TEMPLATE}}
 APP = {'properties': {'latestReadyRevisionName': 'bible-api--old', 'latestRevisionName': 'bible-api--old',
@@ -79,7 +79,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
             GITHUB_ENV=str(self.path/'github-env'), RUNNER_TEMP=str(self.path), GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
             IMAGE_REF=NEW_IMAGE)
         self.review = {'baselineCommit': self.baseline_commit, 'baselineImage': IMAGE, 'baselinePoolMaxOpen': 8, 'ordinarySlots': 844,
-            'otherConnectionsCeiling': 672, 'importsFrozen': True,
+            'otherConnectionsCeiling': 552, 'importsFrozen': True,
             'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'evidence': 'fixture-reviewed-budget'}
 
     def git(self,*args):
@@ -122,7 +122,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
                 self.data['revisions']['bible-api--old']['properties'][field]=value
                 self.run_cli('capture',False)
                 self.data['revisions']['bible-api--old']['properties'][field]=BASE['properties'][field]
-        for field,value in [('baselineCommit','bad'), ('baselineImage',NEW_IMAGE), ('baselinePoolMaxOpen',0), ('otherConnectionsCeiling',673),
+        for field,value in [('baselineCommit','bad'), ('baselineImage',NEW_IMAGE), ('baselinePoolMaxOpen',0), ('otherConnectionsCeiling',553),
                 ('importsFrozen',False), ('verifiedAt','2020-01-01T00:00:00+00:00')]:
             with self.subTest(field=field):
                 old=self.review[field];self.review[field]=value
@@ -130,6 +130,15 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.data['jobs']=[{'name':'bible-import'}]
         self.data['executions']=[{'properties': {'status':'Running'}}]
         self.run_cli('capture',False)
+        self.assertFalse((self.path/'updated').exists())
+
+    def test_capture_rejects_unreviewed_request_scaling(self):
+        for field, value in [('minReplicas', 0), ('maxReplicas', 3), ('rules', [])]:
+            with self.subTest(field=field):
+                scale = self.data['revisions']['bible-api--old']['properties']['template']['scale']
+                old = scale[field]; scale[field] = value
+                self.run_cli('capture', False)
+                scale[field] = old
         self.assertFalse((self.path/'updated').exists())
 
     def test_capture_resolves_registry_tag_to_digest(self):
@@ -177,6 +186,10 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.data['updated_app']={'properties':{'latestRevisionName':name}}
         self.run_cli('update')
         self.assertEqual(self.env['CANDIDATE_REVISION'],name)
+        calls = [json.loads(line) for line in (self.path/'calls').read_text().splitlines()]
+        updates = [args for args in calls if args[:2] == ['containerapp', 'update']]
+        self.assertEqual(updates, [['containerapp', 'update', '-g', 'fixture', '-n', 'bible-api',
+            '--image', NEW_IMAGE, '--revision-suffix', 'release-123-1', '--only-show-errors', '--output', 'json']])
         self.candidate(name,NEW_IMAGE)
         self.run_cli('wait')
         self.data['app']['properties']['latestRevisionName']='bible-api--unrelated'
