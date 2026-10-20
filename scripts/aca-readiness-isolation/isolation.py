@@ -351,7 +351,10 @@ def pg_sql(ctx, cloud, revision, replica, sql):
     nonce = secrets.token_hex(8)
     command = shlex.join(['psql', '--no-psqlrc', '-U', 'fixture', '-d', 'bible_fixture', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', sql])
     shell = 'set -eu; value="$('+command+')"; printf "ISOLATION_'+nonce+'=%s\\n" "$(printf %s "$value" | base64 | tr -d \'\\n\')"'
-    output = cloud.console('bible-ready-pg', revision, replica, '/bin/sh -c '+shlex.quote(shell))
+    # ACA console does not preserve shell-quoted startup arguments.
+    encoded = base64.b64encode(shell.encode()).decode()
+    remote = '/bin/sh -c printf${IFS}%s${IFS}' + encoded + '|base64${IFS}-d|/bin/sh'
+    output = cloud.console('bible-ready-pg', revision, replica, remote)
     return console_result(0, output, nonce)
 
 

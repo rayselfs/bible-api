@@ -24,6 +24,23 @@ class IsolationTests(unittest.TestCase):
         self.image = 'alive.azurecr.io/alive/bible-api@sha256:' + 'b' * 64
         self.helper = 'alive.azurecr.io/alive/bible-readiness-fixture@sha256:' + 'c' * 64
 
+    def test_pg_query_survives_console_word_splitting(self):
+        sql = "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'old';"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / 'psql'
+            executable.write_text('#!/usr/bin/env python3\nimport sys\nfrom pathlib import Path\n'
+                                  + f'Path({str(root / "sql")!r}).write_text(sys.argv[-1])\nprint("0")\n')
+            executable.chmod(0o755)
+            import os
+            env = dict(os.environ, PATH=directory + os.pathsep + os.environ['PATH'])
+            class Console:
+                def console(self, app, revision, replica, command):
+                    result = subprocess.run(command.split(), env=env, capture_output=True, text=True)
+                    return result.stdout
+            self.assertEqual(self.m.pg_sql(self.ctx, Console(), 'revision', 'replica', sql), 0)
+            self.assertEqual((root / 'sql').read_text(), sql)
+
     def test_context_rejects_untrusted_ref_repository_and_noncanonical_ids(self):
         for key, bad in [('GITHUB_REF', 'refs/heads/feature'), ('GITHUB_REPOSITORY', 'fork/bible-api'),
                          ('GITHUB_RUN_ID', '../alive'), ('GITHUB_RUN_ID', '01'),
