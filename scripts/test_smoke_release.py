@@ -15,7 +15,8 @@ if os.environ.get('SMOKE_CASE')=='incomplete':print('HTTP/1.1 200 OK');sys.exit(
 args=shlex.split(sys.argv[sys.argv.index('-c')+1])
 assert args[:3]==['az','containerapp','exec']
 assert args[args.index('-n')+1]=='fixture-gateway'
-command=shlex.split(args[args.index('--command')+1])
+# ACA console splits startup command words without shell quote interpretation.
+command=args[args.index('--command')+1].split()
 sys.exit(subprocess.run(command).returncode)
 '''
 FAKE_WGET = '''#!/usr/bin/env python3
