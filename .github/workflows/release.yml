@@ -36,6 +36,21 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg17@sha256:3e8b3adfd27b5707128f60956f62a793c3c9326ea8cfaf0eab7adccb5d700b21
+        env:
+          POSTGRES_PASSWORD: bible-test
+          POSTGRES_DB: bible_pool_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d bible_pool_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      BIBLE_TEST_DATABASE_URL: postgres://postgres:bible-test@127.0.0.1:5432/bible_pool_test?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -48,6 +63,7 @@ jobs:
       - name: Verify
         run: |
           npx --yes @redocly/cli@2.47.0 lint docs/openapi.yaml
+          test -n "$BIBLE_TEST_DATABASE_URL"
           go test -race ./... -count=1 -p=1
           go vet ./...
           ./scripts/test-release-workflow.sh
@@ -135,7 +151,12 @@ jobs:
           echo "IMAGE_REF=${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}@${digest}" >> "$GITHUB_ENV"
       - name: Update Bible API image
         id: deploy_runtime
-        run: az containerapp update -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --image "$IMAGE_REF" --only-show-errors --output none
+        run: |
+          az containerapp update -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --image "$IMAGE_REF" \
+            --min-replicas 1 --max-replicas 8 \
+            --scale-rule-name cpu-scaler --scale-rule-type cpu \
+            --scale-rule-metadata type=Utilization value=70 \
+            --only-show-errors --output none
       - name: Wait for Bible API revision
         run: |
           for attempt in {1..60}; do
