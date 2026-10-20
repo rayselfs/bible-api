@@ -19,9 +19,8 @@ built from this workflow's merged main source.
 ## Execution prerequisites
 
 Release PR11 normally first; refresh/review/CI/release PR10 afterwards. Complete
-their production smoke and fresh PG budget gates. Only then assign an isolated
-slot; no new work during the 2026-10-20 05:15–at least06:00 Taipei media freeze
-or its coordinator extension. Readiness is not a fix for a running Dapr sidecar
+their production smoke and fresh release-boundary checks. Only then assign an isolated
+slot outside any active media freeze. Readiness is not a fix for a running Dapr sidecar
 failure or proof of the historical50002 socket owner.
 
 The existing OIDC configuration is reused; its actual permissions for creating
@@ -59,8 +58,8 @@ the role review wait and test; cleanup has a separate20min `always` job.
 
 Execution creates only `hhc-bible-ready-<run>-<attempt>` and the declared
 platform infrastructure group, a Consumption environment, synthetic pgvector
-PG17 container, target and caller. Target Single/min1/max3 and0.25CPU/0.5Gi match
-the current production shape; its test helper adds0.25CPU/0.5Gi. PG/caller each
+PG17 container, target and caller. Target Single mode and0.25CPU/0.5Gi match production, with an isolated
+min1/max3 test limit (production max8); its test helper adds0.25CPU/0.5Gi. PG/caller each
 stay one replica. The fixture PG is not `hhc-pg`; it has ephemeral data, a
 run-generated secret and a100connection budget. No public ingress is used by
 target/caller; PG has internal TCP only. Logs destination none avoids a new
