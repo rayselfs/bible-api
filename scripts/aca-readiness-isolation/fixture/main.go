@@ -36,12 +36,13 @@ type sample struct {
 	Failure   string  `json:"failure,omitempty"`
 }
 type observation struct {
-	Phase    string  `json:"phase"`
-	Mono     float64 `json:"mono"`
-	Health   int     `json:"health"`
-	Ready    int     `json:"ready"`
-	Outbound int     `json:"outbound"`
-	Held     bool    `json:"held"`
+	Phase     string  `json:"phase"`
+	Mono      float64 `json:"mono"`
+	Health    int     `json:"health"`
+	Ready     int     `json:"ready"`
+	Outbound  int     `json:"outbound"`
+	Held      bool    `json:"held"`
+	GateReady int     `json:"gateReady"`
 }
 type fixture struct {
 	flight                              sync.Mutex
@@ -49,6 +50,7 @@ type fixture struct {
 	mode, run, revision, phase, problem string
 	started                             time.Time
 	armed                               bool
+	gateOpen                            bool
 	held                                net.Listener
 	sequence                            int
 	samples                             []sample
@@ -61,11 +63,15 @@ func newFixture(mode, run, revision string) *fixture {
 func (f *fixture) ready() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.mode == "gate" {
+		return f.gateOpen
+	}
 	return f.mode != "hold" || f.armed
 }
 func (f *fixture) release() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gateOpen = true
 	if f.held != nil {
 		f.held.Close()
 		f.held = nil
@@ -199,9 +205,9 @@ func (f *fixture) monitor(ctx context.Context) {
 		if f.mode == "caller" && phase != "" {
 			f.recordSample("http://127.0.0.1:3500", version)
 			version = 3 - version
-		} else if f.mode == "hold" {
+		} else if f.mode == "hold" || f.mode == "gate" {
 			o := observation{Phase: phase, Mono: time.Since(f.started).Seconds(), Held: held,
-				Health: status("http://127.0.0.1:9999/health"), Ready: status("http://127.0.0.1:9999/ready"), Outbound: status("http://127.0.0.1:3500/v1.0/healthz/outbound")}
+				Health: status("http://127.0.0.1:9999/health"), Ready: status("http://127.0.0.1:9999/ready"), Outbound: status("http://127.0.0.1:3500/v1.0/healthz/outbound"), GateReady: status("http://127.0.0.1:8081/ready")}
 			f.mu.Lock()
 			f.observations = append(f.observations, o)
 			f.mu.Unlock()
@@ -239,7 +245,8 @@ func (f *fixture) handler() http.Handler {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			json.NewEncoder(w).Encode(map[string]any{"revision": f.revision, "armed": f.armed, "held": f.held != nil,
-				"problem": f.problem, "samples": f.samples, "observations": f.observations})
+				"gateClosed": f.mode == "gate" && !f.gateOpen,
+				"problem":    f.problem, "samples": f.samples, "observations": f.observations})
 		case r.URL.Path == "/release":
 			if r.Method != "POST" {
 				w.WriteHeader(405)
@@ -320,7 +327,7 @@ func main() {
 	mode, run, revision := os.Getenv("FIXTURE_MODE"), os.Getenv("FIXTURE_RUN"), os.Getenv("CONTAINER_APP_REVISION")
 	name := os.Getenv("CONTAINER_APP_NAME")
 	if !regexp.MustCompile(`^[1-9][0-9]*-[1-9][0-9]*$`).MatchString(run) || !strings.HasPrefix(revision, name+"--") ||
-		!((name == "bible-ready-target" && (mode == "idle" || mode == "hold")) || (name == "bible-ready-caller" && mode == "caller")) {
+		!((name == "bible-ready-target" && (mode == "idle" || mode == "hold" || mode == "gate")) || (name == "bible-ready-caller" && mode == "caller")) {
 		log.Fatal("refusing non-isolated fixture context")
 	}
 	f := newFixture(mode, run, revision)

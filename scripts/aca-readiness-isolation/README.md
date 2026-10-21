@@ -18,10 +18,10 @@ built from this workflow's merged main source.
 
 ## Execution prerequisites
 
-Release PR11 normally first; refresh/review/CI/release PR10 afterwards. Complete
-their production smoke and fresh release-boundary checks. Only then assign an isolated
-slot outside any active media freeze. Readiness is not a fix for a running Dapr sidecar
-failure or proof of the historical50002 socket owner.
+The referenced normal main Release must already have accepted production smoke
+and fresh artifact/release-boundary checks. Assign isolation outside an active
+media freeze or another heavyweight acceptance cohort. This scenario validates
+readiness routing; it is not a fix for a running managed sidecar failure.
 
 The existing OIDC configuration is reused; its actual permissions for creating
 the new RG/environment, building the helper, and managing the exact registry
@@ -99,28 +99,42 @@ identity or substitute an unmerged production image.
 
 ## What is measured
 
-The old and new revisions use the same merged Bible digest, distinguished by
-actual revision identity. The old helper is idle. The candidate helper waits
-for graceful local `POST /v1.0/shutdown`, then holds50002. Helper readiness is
-false before arm, true after the real hold and after release, leaving Bible
-`/ready` as the only failing probe during the measured window. A denied API,
-inability to hold the socket, missing managed daprd bind-fatal, app liveness
-failure or a missing continuous600second observation window is UNKNOWN.
-There is no wrong-port fallback, privileged container or host access.
-Each candidate arm poll saves its decoded controlled fixture state before checking
-capability, so a rejected arm retains its exact reason and observations. Missing
-state or failed log retrieval remains UNKNOWN, never an empty successful log.
+The acceptance contract is explicitly layered:
+
+1. The existing local Docker test injects a real Dapr50002 bind fault and checks
+   Bible `/health`200, `/ready`503 and recovery. It does not certify managed ACA.
+2. `aca-readiness-gate-v1` uses actual ACA Single mode and the same Dapr appId.
+   The original Bible probes remain in place. A candidate's isolated helper
+   holds its own readiness endpoint at503 until a loopback-only release. Bible
+   `/health` and `/ready` must both stay200 and Dapr outbound health must stay204;
+   no socket is held and no shutdown API is called by this ACA scenario.
+
+The candidate must remain unready while the old revision serves every request.
+Opening the helper gate then proves actual readiness routing/recovery, followed
+by a second closed candidate and full original-template rollback. Every closed
+window requires continuous600second observations of the closed helper, healthy
+Bible and healthy Dapr. Missing or contradictory evidence remains UNKNOWN.
+Each candidate poll saves its decoded controlled fixture state before checking
+capability, preserving the rejection reason and observations after cleanup.
+
+These layers can support the separate normal readiness-probe delivery, with a
+retained limitation: they do not prove routing, drain, discovery or restart
+behavior during an actual managed-daprd bind failure. Acceptance artifacts name
+the scenario and set `actualManagedBindFailure` to `NOT_TESTED`; no prior failed
+or UNKNOWN allocation is reclassified. ACA does not list the OSS shutdown API
+among supported operational APIs, so this tool does not retry that injection.
+There is no force, wrong-port fallback, privileged container or host access.
 
 The caller continuously requests v1/v2 versions with unique synthetic nonce
 queries and validates the single sentinel record. It records version, status, hash,
 monotonic time and phase. Both versions must appear in each measured window.
 Phase acknowledgements wait for the preceding request
-to finish. Exact revision/replica/container log streams associate each nonce
+to finish. Exact Bible application revision/replica/container log streams associate each nonce
 with the serving revision; 200 without that association is insufficient.
 Missing logs/403/429/management failure/cadence gaps are UNKNOWN; observed
 HTTP/JSON failures or wrong-revision routing are FAIL.
 
-Windows: baseline60s, failed candidate600s, recovered60s, another failed
+Windows: baseline60s, closed-gate candidate600s, recovered60s, another closed-gate
 candidate600s, restored original-template60s. Requests continue through
 transitions. Preparation and handoff have separate phase identities: preparation
 allows only the old serving revision; recovery/rollback allow only their exact
@@ -176,5 +190,9 @@ go test ./scripts/aca-readiness-isolation/fixture -count=1 -p=1
 
 Required remote CI also runs the repository race/vet/OpenAPI/release checks and
 builds both images. None of these execute ACA. Even after source/CI pass, an
-assigned real isolated run with full evidence and cleanup must PASS before a
-separate reviewed Terraform readiness-path change can proceed.
+assigned real isolated `aca-readiness-gate-v1` run with full evidence and cleanup
+must PASS before the separate normal production probe delivery. The local Dapr
+fault suite must also pass; managed-Dapr fault timing remains explicitly untested.
+
+References: [ACA supported APIs and limitations](https://learn.microsoft.com/en-us/azure/container-apps/dapr-overview#limitations),
+[OSS asynchronous shutdown contract](https://docs.dapr.io/reference/api/shutdown_api/).
