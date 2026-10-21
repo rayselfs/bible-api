@@ -169,10 +169,10 @@ def cleanup(ctx, cloud):
     require(cloud.get(ctx.group_id) is None, 'Group deletion not confirmed')
 
 
-def assess(samples, routes, phases, bind_failure):
+def assess(samples, routes, phases, gate_windows_proven):
     if any(s.get('status') != 200 or s.get('valid') is not True for s in samples):
         return 'FAIL'
-    if not bind_failure or not samples or not phases or len({s.get('nonce') for s in samples}) != len(samples):
+    if not gate_windows_proven or not samples or not phases or len({s.get('nonce') for s in samples}) != len(samples):
         return 'UNKNOWN'
     if any(b['mono'] - a['mono'] > 3 or b['mono'] < a['mono'] for a, b in zip(samples, samples[1:])):
         return 'UNKNOWN'
@@ -216,11 +216,15 @@ def console_result(code, output, nonce):
         raise RuntimeError('Management console evidence UNKNOWN') from exc
 
 
-def fault_window(observations, phase, seconds):
+def closed_gate_observation(row):
+    return (row.get('held') is False and row.get('health') == 200 and row.get('ready') == 200 and
+            row.get('outbound') == 204 and row.get('gateReady') == 503)
+
+
+def gate_window(observations, phase, seconds):
     rows = [o for o in observations if o.get('phase') == phase]
     return (len(rows) >= 2 and rows[-1]['mono'] - rows[0]['mono'] >= seconds and
-            all(o.get('held') is True and o.get('health') == 200 and o.get('ready') == 503 and
-                o.get('outbound') != 204 for o in rows) and
+            all(closed_gate_observation(o) for o in rows) and
             all(0 <= b['mono'] - a['mono'] <= 3 for a, b in zip(rows, rows[1:])))
 
 
@@ -236,18 +240,6 @@ def nonce_routes(logs):
             for nonce in re.findall(r'isolation_nonce=(iso-[0-9]+-[0-9]+-[0-9]+)', message):
                 routes.setdefault(nonce, set()).add(revision)
     return routes
-
-
-def bind_fatal(path):
-    for line in path.read_text().splitlines():
-        try:
-            value = json.loads(line)
-            message = value.get('Log', value.get('log', '')).lower()
-        except (ValueError, AttributeError):
-            return False
-        if 'fatal' in message and '50002' in message and 'address already in use' in message:
-            return True
-    return False
 
 
 class ManagementCommandFailure(RuntimeError):
@@ -364,13 +356,13 @@ class Cloud:
         return console_result(0, output, nonce)
 
 
-def candidate_fault_armed(cloud, folder, revision, replica):
+def candidate_gate_closed(cloud, folder, revision, replica):
     state = cloud.control('bible-ready-target', revision, replica, 'state')
     # Persist the controlled fixture response before a capability failure aborts the run.
     write_json(folder, revision+'-state.json', state)
-    require(not state.get('problem'), 'Candidate fault capability UNKNOWN')
+    require(not state.get('problem'), 'Candidate readiness gate UNKNOWN')
     rows = state.get('observations') or []
-    return state.get('armed') and state.get('held') and rows and rows[-1]['health'] == 200 and rows[-1]['ready'] == 503
+    return state.get('gateClosed') is True and rows and closed_gate_observation(rows[-1])
 
 
 def wait_for(predicate, seconds, label):
@@ -700,7 +692,6 @@ def run_acceptance(ctx, cloud, manifests, folder):
         inventory(name+'-end', allowed)
 
     expected = {}
-    fatal_paths = []
     history = {}
     try:
         logs(baseline, baseline_replica, 'bible-api')
@@ -726,20 +717,19 @@ def run_acceptance(ctx, cloud, manifests, folder):
             target['properties']['template']['revisionSuffix'] = suffix
             containers = target['properties']['template']['containers']
             containers[0]['env'][-1]['value'] = 'isolation_'+suffix.replace('-', '_')
-            containers[1]['env'][0]['value'] = 'hold'
+            containers[1]['env'][0]['value'] = 'gate'
             cloud.put(ctx.app_id('bible-ready-target'), target)
             candidate = 'bible-ready-target--'+suffix
             replica = wait_for(lambda: _candidate_replica(ctx, cloud, candidate), 300, 'candidate replica')
             logs(candidate, replica, 'bible-api')
-            fatal_paths.append(logs(candidate, replica, 'daprd'))
-            wait_for(lambda: candidate_fault_armed(cloud, folder, candidate, replica), 90, 'candidate-only fault')
+            wait_for(lambda: candidate_gate_closed(cloud, folder, candidate, replica), 90, 'candidate readiness gate')
             require(cloud.get(ctx.app_id('bible-ready-target'))['properties']['latestReadyRevisionName'] == serving,
                     'Old revision lost authority before fault window')
             control(candidate, replica, 'phase-'+fault_phase)
             phase(fault_phase, 600, {serving, candidate})
             state = control(candidate, replica, 'state')
             history[fault_phase] = state
-            require(fault_window(state.get('observations') or [], fault_phase, 600), 'Fault window not proven; UNKNOWN')
+            require(gate_window(state.get('observations') or [], fault_phase, 600), 'Readiness gate window not proven; UNKNOWN')
             expected[fault_phase] = {'seconds': 600, 'revision': serving}
             transition = 'recover_transition' if suffix == 'fault' else 'rollback_transition'
             recovered = candidate if suffix == 'fault' else 'bible-ready-target--restore'
@@ -787,9 +777,11 @@ def run_acceptance(ctx, cloud, manifests, folder):
             h.close()
         write_json(folder, 'log-stream-status.json', {'stoppedEarly': stopped_early,
                    'retiredStreamPolicy': 'only confirmed inactive zero-replica stopped revisions may close'})
-    bind = len(fatal_paths) == 2 and all(bind_fatal(p) for p in fatal_paths)
-    result = assess(samples.get('samples') or [], nonce_routes(log_files), expected, bind)
-    write_json(folder, 'acceptance.json', {'result': result, 'phases': expected, 'actualManagedBindFailure': bind})
+    gates = set(history) == {'fault', 'rollback_fault'} and all(
+        gate_window(history[name].get('observations') or [], name, 600) for name in history)
+    result = assess(samples.get('samples') or [], nonce_routes(log_files), expected, gates)
+    write_json(folder, 'acceptance.json', {'result': result, 'scenario': 'aca-readiness-gate-v1',
+               'phases': expected, 'actualManagedBindFailure': 'NOT_TESTED', 'healthySidecarGateWindowsProven': gates})
     require(result == 'PASS', 'ACA acceptance '+result)
 
 

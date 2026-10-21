@@ -73,7 +73,7 @@ class IsolationTests(unittest.TestCase):
                     f'import sys; print("ERROR: ({code}) credential=secret", file=sys.stderr); sys.exit(1)'])
             self.assertNotIn('secret', str(caught.exception))
 
-    def test_candidate_fault_state_survives_rejection_without_weakening_gate(self):
+    def test_candidate_gate_state_survives_rejection_without_weakening_gate(self):
         class Control:
             def control(self, app, revision, replica, action):
                 if (app, revision, replica, action) != (
@@ -83,17 +83,17 @@ class IsolationTests(unittest.TestCase):
         cloud = Control()
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            cloud.state = dict(armed=False, held=False, problem='shutdown capability denied status 403', observations=[])
-            with self.assertRaisesRegex(ValueError, 'Candidate fault capability UNKNOWN'):
-                self.m.candidate_fault_armed(cloud, folder, 'bible-ready-target--fault', 'replica')
+            cloud.state = dict(armed=False, held=False, problem='evidence capacity exceeded', observations=[])
+            with self.assertRaisesRegex(ValueError, 'Candidate readiness gate UNKNOWN'):
+                self.m.candidate_gate_closed(cloud, folder, 'bible-ready-target--fault', 'replica')
             saved = folder / 'bible-ready-target--fault-state.json'
-            self.assertEqual(json.loads(saved.read_text())['problem'], 'shutdown capability denied status 403')
-            cloud.state = dict(armed=True, held=True, problem='', observations=[dict(health=200, ready=200)])
-            self.assertFalse(self.m.candidate_fault_armed(cloud, folder, 'bible-ready-target--fault', 'replica'))
-            self.assertEqual(json.loads(saved.read_text())['observations'][0]['ready'], 200)
-            cloud.state['observations'][0]['ready'] = 503
-            self.assertTrue(self.m.candidate_fault_armed(cloud, folder, 'bible-ready-target--fault', 'replica'))
-            self.assertEqual(json.loads(saved.read_text())['observations'][0]['ready'], 503)
+            self.assertEqual(json.loads(saved.read_text())['problem'], 'evidence capacity exceeded')
+            cloud.state = dict(gateClosed=True, problem='', observations=[dict(held=False,health=200,ready=200,outbound=204,gateReady=200)])
+            self.assertFalse(self.m.candidate_gate_closed(cloud, folder, 'bible-ready-target--fault', 'replica'))
+            self.assertEqual(json.loads(saved.read_text())['observations'][0]['gateReady'], 200)
+            cloud.state['observations'][0]['gateReady'] = 503
+            self.assertTrue(self.m.candidate_gate_closed(cloud, folder, 'bible-ready-target--fault', 'replica'))
+            self.assertEqual(json.loads(saved.read_text())['observations'][0]['gateReady'], 503)
 
     def test_candidate_discovery_waits_only_for_not_found(self):
         module = self.m
@@ -223,7 +223,7 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(cloud.written, [self.ctx.role_id])
         self.assertEqual(cloud.role['properties']['principalId'], '11111111-1111-1111-1111-111111111111')
 
-    def test_assessment_demands_complete_nonce_revision_cadence_and_true_fault(self):
+    def test_assessment_demands_complete_nonce_revision_cadence_and_proven_gate_windows(self):
         samples = [dict(phase='fault', mono=i, nonce=f'iso-123-1-{i}', status=200,
                         valid=True, version=1+i%2) for i in range(602)]
         routes = {s['nonce']: {'old'} for s in samples}
@@ -288,14 +288,15 @@ class IsolationTests(unittest.TestCase):
             preview=json.loads((Path(folder)/'preview.json').read_text())
             self.assertEqual(preview['role']['principalId'],'UNRESOLVED_NEW_ENVIRONMENT_IDENTITY')
 
-    def test_fault_evidence_requires_held_port_and_app_healthy_for_whole_window(self):
-        observations=[dict(phase='fault',mono=i,held=True,health=200,ready=503,outbound=0) for i in range(602)]
-        self.assertTrue(self.m.fault_window(observations,'fault',600))
-        observations[3]['health']=0
-        self.assertFalse(self.m.fault_window(observations,'fault',600))
-        observations[3]['health']=200
-        observations[4]['ready']=200
-        self.assertFalse(self.m.fault_window(observations,'fault',600))
+    def test_gate_window_requires_healthy_dapr_and_bible_with_closed_helper(self):
+        observations=[dict(phase='fault',mono=i,held=False,health=200,ready=200,outbound=204,gateReady=503) for i in range(602)]
+        self.assertTrue(self.m.gate_window(observations,'fault',600))
+        for field, bad in [('health',0),('ready',503),('outbound',0),('held',True),('gateReady',200)]:
+            changed=copy.deepcopy(observations);changed[3][field]=bad
+            with self.subTest(field=field):self.assertFalse(self.m.gate_window(changed,'fault',600))
+        self.assertFalse(self.m.gate_window(observations[:20],'fault',600))
+        observations[3]['mono']=10
+        self.assertFalse(self.m.gate_window(observations,'fault',600))
 
     def test_log_association_uses_nonce_and_exact_captured_revision(self):
         import tempfile
@@ -359,15 +360,6 @@ class IsolationTests(unittest.TestCase):
             self.assertNotIn('secret-marker',str(call.args))
             self.assertIn('secret-marker',call.kwargs['input'])
             self.assertNotIn('secret-marker',str(error.exception))
-
-    def test_bind_fatal_requires_same_event_and_correct_port(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder)/'daprd.log'
-            path.write_text(json.dumps({'Log':'level=fatal failed listen tcp :50002: bind: address already in use'})+'\n')
-            self.assertTrue(self.m.bind_fatal(path))
-            path.write_text(json.dumps({'Log':'starting50002'})+'\n'+json.dumps({'Log':'level=fatal port3500 address already in use'})+'\n')
-            self.assertFalse(self.m.bind_fatal(path))
 
     def test_inactive_running_revision_is_never_omitted_from_budget(self):
         import tempfile

@@ -236,3 +236,42 @@ func TestSampleRecordsBoundedTransportFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestGateStaysUnreadyUntilLocalReleaseWithoutPortHold(t *testing.T) {
+	f := newFixture("gate", "123-1", "bible-ready-target--fault")
+	request := func(method, path, remote string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
+		r.RemoteAddr = remote
+		w := httptest.NewRecorder()
+		f.handler().ServeHTTP(w, r)
+		return w
+	}
+	if got := request("GET", "/ready", "10.0.0.1:12").Code; got != 503 {
+		t.Fatalf("closed gate ready=%d", got)
+	}
+	if got := request("POST", "/release", "10.0.0.1:12").Code; got != 403 {
+		t.Fatalf("remote release=%d", got)
+	}
+	if f.ready() {
+		t.Fatal("remote caller opened gate")
+	}
+	var state map[string]any
+	if err := json.Unmarshal(request("GET", "/state", "127.0.0.1:12").Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["gateClosed"] != true || state["held"] != false || state["armed"] != false {
+		t.Fatalf("gate falsely represented a Dapr fault: %+v", state)
+	}
+	if got := request("POST", "/release", "127.0.0.1:12").Code; got != 204 {
+		t.Fatalf("local release=%d", got)
+	}
+	if !f.ready() {
+		t.Fatal("local release left gate closed")
+	}
+	if err := json.Unmarshal(request("GET", "/state", "127.0.0.1:12").Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["gateClosed"] != false || state["held"] != false {
+		t.Fatalf("bad released state: %+v", state)
+	}
+}
