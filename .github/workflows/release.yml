@@ -130,7 +130,7 @@ jobs:
           digest="$(az acr repository show --name "$ACR_NAME" --image "${IMAGE_REPOSITORY}:${IMAGE_TAG}" --query digest -o tsv --only-show-errors)"
           [[ "$digest" == sha256:* ]]
           echo "IMAGE_REF=${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}@${digest}" >> "$GITHUB_ENV"
-      - name: Update Bible API image
+      - name: Update Bible API image and readiness
         id: deploy_runtime
         run: python3 scripts/release-runtime.py update
       - name: Wait for Bible API revision

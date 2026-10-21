@@ -1,7 +1,7 @@
 # Disposable ACA readiness acceptance
 
-This tool is preparation for Bible's separate production probe change. It does
-not modify the production Release workflow, production PG, replicas, probes,
+This tool measures optional routing/availability certification separately from
+Bible's bounded production readiness-probe delivery. It does not modify the production Release workflow, production PG, replicas, probes,
 Gateway, Dapr settings, identities or application routes. Merging this source
 does not trigger Production Release under its existing path filter. Never
 execute the isolation workflow from a PR or use an unmerged Bible artifact.
@@ -193,10 +193,14 @@ go test ./scripts/aca-readiness-isolation/fixture -count=1 -p=1
 ```
 
 Required remote CI also runs the repository race/vet/OpenAPI/release checks and
-builds both images. None of these execute ACA. Even after source/CI pass, an
-assigned real isolated `aca-readiness-gate-v1` run with full evidence and cleanup
-must PASS before the separate normal production probe delivery. The local Dapr
-fault suite must also pass; managed-Dapr fault timing remains explicitly untested.
+builds both images. None of these execute ACA. A routing/availability certification
+requires an assigned real `aca-readiness-gate-v1` run with full evidence and
+cleanup to PASS; missing evidence remains UNKNOWN. The bounded probe delivery
+instead retains the passed local Dapr fault suite, required CI, fresh provider
+preview and normal immutable candidate/smoke/compatible-rollback checks. Every
+owned isolation allocation must be cleaned before production rollout. Zero-loss
+handoff remains NOT_CERTIFIED and actual managed-Dapr fault behavior NOT_TESTED;
+neither local tests nor ordinary release smoke closes those separate claims.
 
 References: [ACA supported APIs and limitations](https://learn.microsoft.com/en-us/azure/container-apps/dapr-overview#limitations),
 [OSS asynchronous shutdown contract](https://docs.dapr.io/reference/api/shutdown_api/).
