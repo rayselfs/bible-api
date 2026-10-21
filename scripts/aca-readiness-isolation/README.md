@@ -19,9 +19,13 @@ built from this workflow's merged main source.
 ## Execution prerequisites
 
 The referenced normal main Release must already have accepted production smoke
-and fresh artifact/release-boundary checks. Assign isolation outside an active
-media freeze or another heavyweight acceptance cohort. This scenario validates
-readiness routing; it is not a fix for a running managed sidecar failure.
+and fresh artifact/release-boundary checks. Never allocate during an active
+media freeze. A coordinator may assign a slot alongside an existing media job
+only after recording fresh quota/headroom, budget and cleanup capacity, and
+confirming this disposable environment and fixture DB share no production
+runtime or data dependency with that job. Otherwise keep the cohorts serial.
+This scenario validates readiness routing; it is not a fix for a running
+managed sidecar failure.
 
 The existing OIDC configuration is reused; its actual permissions for creating
 the new RG/environment, building the helper, and managing the exact registry
