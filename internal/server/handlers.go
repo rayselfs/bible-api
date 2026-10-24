@@ -96,7 +96,6 @@ func (a *API) HandleGetVersionContent(c *gin.Context) {
 
 	// Set up Server-Sent Events headers
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no") // Prevent Nginx buffering (if using Nginx)
 
@@ -217,7 +216,6 @@ func (a *API) HandleGetVectors(c *gin.Context) {
 
 	// Set headers for binary stream
 	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Cache-Control", "public, max-age=3600")
 	c.Header("Connection", "keep-alive")
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)

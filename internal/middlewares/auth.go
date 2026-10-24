@@ -6,6 +6,7 @@ import (
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Header("Cache-Control", "private, no-store")
 		userID := c.GetHeader("X-User-ID")
 		roles := c.GetHeader("X-Roles")
 		permissions := c.GetHeader("X-Permissions")
