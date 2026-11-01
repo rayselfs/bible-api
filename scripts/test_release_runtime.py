@@ -38,20 +38,28 @@ if key=='containerapp revision show':
 elif key=='containerapp replica list':result=data['replicas']
 elif key=='containerapp job list':result=data['jobs']
 elif key=='containerapp job execution':result=data['executions']
-elif args[:2]==['containerapp','show']:result=data['app']
+elif args[:2]==['containerapp','show']:
+    if data.get('pending_configuration'):
+        if data.get('pending_reads',0)>0:data['pending_reads']-=1
+        else:data['app']['properties']['configuration'].update(data.pop('pending_configuration'))
+        (p/'azure.json').write_text(json.dumps(data))
+    result=data['app']
 elif args[0]=='rest':
     payload=json.load(sys.stdin)
     (p/'patch.json').write_text(json.dumps(payload))
     if 'template' not in payload['properties']:
         (p/'configured').touch()
-        data['app']['properties']['configuration'].update(payload['properties']['configuration'])
+        if data.get('configure_pending_reads'):
+            data['pending_configuration']=payload['properties']['configuration']
+            data['pending_reads']=data['configure_pending_reads']
+        else:data['app']['properties']['configuration'].update(payload['properties']['configuration'])
         (p/'azure.json').write_text(json.dumps(data))
         print(json.dumps(data['app']))
         sys.exit(0)
     suffix=payload['properties']['template']['revisionSuffix']
     if suffix.startswith('rollback-'):
         (p/'copied').touch();result=data['copied_app']
-        name=result['properties']['latestRevisionName']
+        name='bible-api--'+suffix
         revision=json.loads(json.dumps(data['revisions']['bible-api--old']));revision['name']=name
         revision['properties']['template']=payload['properties']['template']
         if data.get('corrupt_copy_probe'):revision['properties']['template']['containers'][0]['probes'][0]['httpGet']['path']='/ready'
@@ -265,6 +273,40 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.run_cli('rollback')
         self.assertIsNone(self.data['app']['properties']['configuration']['ingress'])
         self.assertTrue(self.data['app']['properties']['configuration']['dapr']['enabled'])
+
+    def test_configure_waits_for_owned_async_app_scope_readback(self):
+        self.prepare_updated_candidate()
+        self.data['configure_pending_reads']=2
+        (self.path/'azure.json').write_text(json.dumps(self.data))
+        spec=importlib.util.spec_from_file_location('runtime_async',ROOT/'scripts/release-runtime.py')
+        runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+        with mock.patch.dict(os.environ,self.env), mock.patch.object(runtime.time,'sleep') as pause:
+            runtime.configure()
+        actual=json.loads((self.path/'azure.json').read_text())['app']['properties']['configuration']
+        self.assertEqual(actual['ingress'],RUNTIME['ingress'])
+        self.assertEqual(pause.call_count,2)
+
+    def test_rollback_accepts_async_response_then_verifies_exact_revision(self):
+        self.prepare_updated_candidate()
+        self.data['copied_app']={}
+        self.run_cli('rollback')
+        self.assertEqual(self.env['ROLLBACK_REVISION'],'bible-api--rollback-123-1')
+
+    def test_configure_refuses_supersession_and_has_a_deadline(self):
+        self.prepare_updated_candidate()
+        (self.path/'azure.json').write_text(json.dumps(self.data))
+        spec=importlib.util.spec_from_file_location('runtime_async_bounds',ROOT/'scripts/release-runtime.py')
+        runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+        initial=json.loads(json.dumps(self.data['app']['properties']))
+        foreign=json.loads(json.dumps(initial));foreign['latestRevisionName']='bible-api--foreign'
+        foreign['configuration']['ingress']=RUNTIME['ingress']
+        with mock.patch.dict(os.environ,self.env), mock.patch.object(runtime,'app',side_effect=[initial,foreign]):
+            with self.assertRaisesRegex(ValueError,'superseded'): runtime.configure()
+        self.data['configure_pending_reads']=99
+        (self.path/'azure.json').write_text(json.dumps(self.data))
+        with mock.patch.dict(os.environ,self.env), mock.patch.object(runtime.time,'monotonic',side_effect=[0,1,181]), \
+                mock.patch.object(runtime.time,'sleep'):
+            with self.assertRaisesRegex(ValueError,'deadline'): runtime.configure()
 
     def test_public_ingress_and_missing_credential_block_before_mutation(self):
         self.data['app']['properties']['configuration']['ingress']={'external':True,'targetPort':9999,'allowInsecure':False}

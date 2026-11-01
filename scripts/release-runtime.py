@@ -173,7 +173,19 @@ def configure():
     exported(CONFIGURATION_UPDATE_STARTED='true')
     az('rest', '--method', 'PATCH', '--url', runtime_url(), '--body', '@/dev/stdin',
        body={'properties': {'configuration': desired}})
-    require(configuration_matches(app()['configuration'], desired), 'Transport configuration was not applied')
+    deadline = time.monotonic() + 180
+    for attempt in range(30):
+        require(time.monotonic() < deadline, 'Transport configuration deadline exceeded')
+        current = app()
+        require(current['latestRevisionName'] == os.environ['CANDIDATE_REVISION'],
+                'Transport update superseded; refusing another rollout')
+        if configuration_matches(current['configuration'], desired):
+            return
+        require(configuration_matches(current['configuration'], data['configuration']),
+                'Unexpected transport change during configuration')
+        if attempt < 29:
+            time.sleep(2)
+    raise ValueError('Transport configuration deadline exceeded')
 
 
 def exported(**values):
@@ -291,7 +303,9 @@ def wait(name, image, expected_hash=None, previous=None, expected_configuration=
     for attempt in range(60):
         require(time.monotonic() < deadline, 'Candidate readiness deadline exceeded')
         current = app()
-        if previous is not None and current['latestRevisionName'] == current['latestReadyRevisionName'] == previous:
+        if previous is not None and current['latestRevisionName'] == previous:
+            require(current['latestReadyRevisionName'] in (previous, os.environ.get('PREVIOUS_READY_REVISION')),
+                    'Previous ready revision changed during update')
             if attempt < 59:
                 time.sleep(10)
             continue
@@ -336,9 +350,10 @@ def rollback():
     template['containers'][0]['image'] = data['image']
     template['revisionSuffix'] = suffix
     result = patch_runtime(template, data['configuration'])
-    require(result['properties']['latestRevisionName'] == name, 'Unknown rollback candidate')
+    require(result.get('properties', {}).get('latestRevisionName') in (None, candidate, name),
+            'Unknown rollback candidate')
     exported(ROLLBACK_REVISION=name)
-    wait(name, data['image'], data['templateHash'], expected_configuration=data['configuration'])
+    wait(name, data['image'], data['templateHash'], previous=candidate, expected_configuration=data['configuration'])
 
 
 if __name__ == '__main__':
