@@ -117,6 +117,10 @@ def transport(configuration):
     result = {k: copy.deepcopy(configuration.get(k)) for k in ('ingress', 'dapr')}
     if result['ingress'] is not None:
         result['ingress'].pop('fqdn', None)
+        # CLI readback includes this null field, unsupported by the pinned write API.
+        require(result['ingress'].get('targetPortHttpScheme') is None,
+                'Review non-default ingress targetPortHttpScheme before release')
+        result['ingress'].pop('targetPortHttpScheme', None)
     return result
 
 

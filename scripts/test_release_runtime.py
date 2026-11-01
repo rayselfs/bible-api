@@ -91,6 +91,21 @@ print(json.dumps(result))
 '''
 
 class ReleaseRuntimeTests(unittest.TestCase):
+    def test_transport_omits_unsupported_null_ingress_readback_field(self):
+        spec=importlib.util.spec_from_file_location('runtime_ingress',ROOT/'scripts/release-runtime.py')
+        runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+        configuration=json.loads(json.dumps(APP['properties']['configuration']))
+        configuration['ingress']['fqdn']='bible-api.internal.example'
+        configuration['ingress']['targetPortHttpScheme']=None
+        result=runtime.transport(configuration)
+        self.assertNotIn('fqdn',result['ingress'])
+        self.assertNotIn('targetPortHttpScheme',result['ingress'])
+        self.assertIn('targetPortHttpScheme',configuration['ingress'])
+        self.assertEqual(result['ingress'],RUNTIME['ingress'])
+        configuration['ingress']['targetPortHttpScheme']='http'
+        with self.assertRaisesRegex(ValueError,'non-default ingress'):
+            runtime.transport(configuration)
+
     def test_template_hash_normalizes_only_platform_scale_defaults(self):
         spec=importlib.util.spec_from_file_location('runtime_defaults',ROOT/'scripts/release-runtime.py')
         runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
