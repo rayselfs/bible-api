@@ -254,11 +254,9 @@ def check_release_boundaries(template, image, allowed_revisions):
     return live_names
 
 
-def capture():
-    current = app()
-    name = current['latestReadyRevisionName']
-    require(current['latestRevisionName'] == name, 'An unfinished rollout is already present')
-    baseline = revision(name)
+def running_baseline(current, name, baseline):
+    require(current['latestRevisionName'] == current['latestReadyRevisionName'] == name,
+            'Baseline changed before activation')
     if baseline['runningState'] == 'ScaleTo0' and baseline['template']['scale'].get('minReplicas') == 0:
         require(current['configuration'].get('ingress'), 'No HTTP wake route for the baseline')
         # Wake via the real caller path; metadata reads alone cannot start a zero-scaled app.
@@ -274,6 +272,15 @@ def capture():
                 break
             if attempt < 11:
                 time.sleep(5)
+    return current, baseline
+
+
+def capture():
+    current = app()
+    name = current['latestReadyRevisionName']
+    require(current['latestRevisionName'] == name, 'An unfinished rollout is already present')
+    baseline = revision(name)
+    current, baseline = running_baseline(current, name, baseline)
     require(baseline['active'] is True and baseline['healthState'] == 'Healthy' and
             baseline['runningState'] in ('Running', 'RunningAtMaxScale'), 'Rollback baseline is not active and healthy')
     require(current['latestRevisionName'] == name, 'An unfinished rollout is already present')
@@ -303,10 +310,9 @@ def snapshot():
 
 def update():
     data = snapshot()
-    baseline = revision(data['revision'])
+    current, baseline = running_baseline(app(), data['revision'], revision(data['revision']))
     require(check_release_boundaries(baseline['template'], data['image'], {data['revision']}) == {data['revision']}, 'Baseline is missing from revision inventory')
     require(baseline['active'] is True and baseline['healthState'] == 'Healthy' and baseline['runningState'] in ('Running', 'RunningAtMaxScale'), 'Baseline lost health before update')
-    current = app()
     require(current['latestReadyRevisionName'] == current['latestRevisionName'] == data['revision'], 'Baseline changed before update')
     require(transport(current['configuration']) == data['configuration'], 'App-scope configuration changed after capture')
     require('bible-gateway-token' in {s['name'] for s in current['configuration'].get('secrets', [])},

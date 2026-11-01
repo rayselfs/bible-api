@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real release CLI against a strict fake Azure boundary."""
 import datetime
+import contextlib
 import importlib.util
 import sys
 from unittest import mock
@@ -206,6 +207,29 @@ class ReleaseRuntimeTests(unittest.TestCase):
                 else:
                     runtime.capture()
                     wake.assert_called_once_with('https://www.alive.org.tw/api/bible/v2/versions',timeout=60)
+
+    def test_update_reactivates_baseline_that_scaled_down_during_image_build(self):
+        state=self.data['revisions']['bible-api--old']['properties']
+        state['template']['scale']=json.loads(json.dumps(RUNTIME['scale']))
+        self.run_cli('capture')
+        state=self.data['revisions']['bible-api--old']['properties']
+        state['runningState']='ScaleTo0'
+        self.data['updated_app']={'properties':{'latestRevisionName':'bible-api--release-123-1'}}
+        (self.path/'azure.json').write_text(json.dumps(self.data))
+        spec=importlib.util.spec_from_file_location('runtime_reactivate',ROOT/'scripts/release-runtime.py')
+        runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+        def activated(_limit):
+            state['runningState']='Running'
+            (self.path/'azure.json').write_text(json.dumps(self.data))
+            return b'[]'
+        response=mock.MagicMock()
+        response.__enter__.return_value.status=200
+        response.__enter__.return_value.read.side_effect=activated
+        with mock.patch.dict(os.environ,self.env), mock.patch.object(runtime,'urlopen',return_value=response) as wake, \
+                contextlib.chdir(self.source):
+            runtime.update()
+            wake.assert_called_once_with('https://www.alive.org.tw/api/bible/v2/versions',timeout=60)
+        self.assertTrue((self.path/'updated').exists())
 
     def test_capture_preserves_original_probe_and_template(self):
         self.run_cli('capture')
