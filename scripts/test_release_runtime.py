@@ -378,7 +378,8 @@ class ReleaseRuntimeTests(unittest.TestCase):
             runtime.configure()
         actual=json.loads((self.path/'azure.json').read_text())['app']['properties']['configuration']
         self.assertEqual(actual['ingress'],RUNTIME['ingress'])
-        self.assertEqual(pause.call_count,2)
+        # subprocess polling can also call time.sleep; count only transport waits.
+        self.assertEqual(pause.call_args_list.count(mock.call(2)),2)
 
     def test_rollback_accepts_async_response_then_verifies_exact_revision(self):
         self.prepare_updated_candidate()
