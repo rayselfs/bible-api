@@ -1,9 +1,25 @@
 package configs
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestGatewayTokenValidation(t *testing.T) {
+	for _, value := range []string{"", strings.Repeat("a", 64)} {
+		t.Setenv("BIBLE_GATEWAY_TOKEN", value)
+		if _, err := InitConfig(); err != nil {
+			t.Fatal("valid gateway configuration rejected")
+		}
+	}
+	for _, value := range []string{"short", strings.Repeat("A", 64), strings.Repeat("a", 64) + "\n"} {
+		t.Setenv("BIBLE_GATEWAY_TOKEN", value)
+		if _, err := InitConfig(); err == nil {
+			t.Fatal("invalid gateway token accepted")
+		}
+	}
+}
 
 func TestPoolConfigDefaultsAndValidation(t *testing.T) {
 	for _, key := range []string{"DB_MAX_OPEN_CONNS", "DB_MAX_IDLE_CONNS", "DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME"} {

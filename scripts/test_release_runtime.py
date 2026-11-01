@@ -12,6 +12,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
+RUNTIME = json.loads((ROOT/'infra/runtime.json').read_text())
 IMAGE = 'alive.azurecr.io/alive/bible-api@sha256:' + 'a' * 64
 NEW_IMAGE = 'alive.azurecr.io/alive/bible-api@sha256:' + 'b' * 64
 TEMPLATE = {'containers': [{'name': 'bible-api', 'image': IMAGE, 'probes': [
@@ -21,7 +22,7 @@ TEMPLATE = {'containers': [{'name': 'bible-api', 'image': IMAGE, 'probes': [
 BASE = {'name': 'bible-api--old', 'properties': {'active': True, 'healthState': 'Healthy',
     'runningState': 'RunningAtMaxScale', 'template': TEMPLATE}}
 APP = {'properties': {'latestReadyRevisionName': 'bible-api--old', 'latestRevisionName': 'bible-api--old',
-    'configuration': {'activeRevisionsMode': 'Single', 'dapr': {'enabled': True, 'appId': 'bible-api', 'appPort': 9999}}}}
+    'configuration': {'activeRevisionsMode': 'Single', 'secrets': [{'name':'bible-gateway-token'}], 'dapr': {'enabled': True, 'appId': 'bible-api', 'appPort': 9999}}}}
 
 FAKE_AZ = '''#!/usr/bin/env python3
 import json,os,sys
@@ -41,7 +42,25 @@ elif args[:2]==['containerapp','show']:result=data['app']
 elif args[0]=='rest':
     payload=json.load(sys.stdin)
     (p/'patch.json').write_text(json.dumps(payload))
-    (p/'updated').touch();result=data['updated_app']
+    if 'template' not in payload['properties']:
+        (p/'configured').touch()
+        data['app']['properties']['configuration'].update(payload['properties']['configuration'])
+        (p/'azure.json').write_text(json.dumps(data))
+        print(json.dumps(data['app']))
+        sys.exit(0)
+    suffix=payload['properties']['template']['revisionSuffix']
+    if suffix.startswith('rollback-'):
+        (p/'copied').touch();result=data['copied_app']
+        name=result['properties']['latestRevisionName']
+        revision=json.loads(json.dumps(data['revisions']['bible-api--old']));revision['name']=name
+        revision['properties']['template']=payload['properties']['template']
+        if data.get('corrupt_copy_probe'):revision['properties']['template']['containers'][0]['probes'][0]['httpGet']['path']='/ready'
+        data['revisions'][name]=revision
+        data['app']['properties'].update(latestRevisionName=name,latestReadyRevisionName=name)
+        data['app']['properties']['configuration'].update(payload['properties']['configuration'])
+        (p/'azure.json').write_text(json.dumps(data))
+    else:
+        (p/'updated').touch();result=data['updated_app']
 elif key=='containerapp revision copy':
     (p/'copied').touch();result=data['copied_app']
     source=args[args.index('--from-revision')+1]
@@ -182,6 +201,8 @@ class ReleaseRuntimeTests(unittest.TestCase):
         revision=json.loads(json.dumps(BASE));revision['name']=name
         revision['properties']['template']['containers'][0]['image']=image
         revision['properties']['template']['containers'][0]['probes'][0]['httpGet']['path']='/ready'
+        revision['properties']['template']['containers'][0]['env'].append({'name':'BIBLE_GATEWAY_TOKEN','secretRef':'bible-gateway-token'})
+        revision['properties']['template']['scale']=json.loads(json.dumps(RUNTIME['scale']))
         self.data['revisions'][name]=revision
         self.data['app']['properties'].update(latestRevisionName=name,latestReadyRevisionName=name)
         return revision
@@ -202,8 +223,11 @@ class ReleaseRuntimeTests(unittest.TestCase):
         expected = json.loads(json.dumps(TEMPLATE))
         expected['containers'][0]['image'] = NEW_IMAGE
         expected['containers'][0]['probes'][0]['httpGet']['path'] = '/ready'
+        expected['containers'][0]['env'].append({'name':'BIBLE_GATEWAY_TOKEN','secretRef':'bible-gateway-token'})
+        expected['scale'] = RUNTIME['scale']
         expected['revisionSuffix'] = 'release-123-1'
-        self.assertEqual(json.loads((self.path/'patch.json').read_text()), {'properties': {'template': expected}})
+        self.assertEqual(json.loads((self.path/'patch.json').read_text()), {'properties': {'template': expected,
+            'configuration': {'ingress':None,'dapr':APP['properties']['configuration']['dapr']}}})
         self.candidate(name,NEW_IMAGE)
         self.run_cli('wait')
         self.data['app']['properties']['latestRevisionName']='bible-api--unrelated'
@@ -213,6 +237,29 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.run_cli('wait',False)
         self.data['app']='DENIED'
         self.run_cli('wait',False)
+
+    def test_ingress_is_enabled_only_after_authenticated_image_is_ready(self):
+        self.prepare_updated_candidate()
+        self.data['app']['properties']['latestReadyRevisionName']='bible-api--old'
+        self.run_cli('configure',False)
+        self.assertFalse((self.path/'configured').exists())
+        self.data['app']['properties']['latestReadyRevisionName']='bible-api--release-123-1'
+        self.run_cli('configure')
+        self.assertFalse(self.data['app']['properties']['configuration']['ingress']['external'])
+        self.assertEqual(self.data['app']['properties']['configuration']['ingress']['targetPort'],9999)
+        self.run_cli('wait')
+        self.run_cli('rollback')
+        self.assertIsNone(self.data['app']['properties']['configuration']['ingress'])
+        self.assertTrue(self.data['app']['properties']['configuration']['dapr']['enabled'])
+
+    def test_public_ingress_and_missing_credential_block_before_mutation(self):
+        self.data['app']['properties']['configuration']['ingress']={'external':True,'targetPort':9999,'allowInsecure':False}
+        self.run_cli('capture',False)
+        self.data['app']['properties']['configuration'].pop('ingress')
+        self.run_cli('capture')
+        self.data['app']['properties']['configuration']['secrets']=[]
+        self.run_cli('update',False)
+        self.assertFalse((self.path/'updated').exists())
 
     def prepare_updated_candidate(self):
         self.run_cli('capture')
@@ -294,9 +341,12 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.run_cli('rollback')
         self.assertEqual(self.env['ROLLBACK_REVISION'],'bible-api--rollback-123-1')
         calls=[json.loads(x) for x in (self.path/'calls').read_text().splitlines()]
-        copy=next(x for x in calls if x[:3]==['containerapp','revision','copy'])
-        self.assertEqual(copy[copy.index('--from-revision')+1],'bible-api--old')
-        self.assertEqual(copy[copy.index('--image')+1],IMAGE)
+        patches=[x for x in calls if x[0]=='rest']
+        self.assertEqual(len(patches),2)
+        restored=json.loads((self.path/'patch.json').read_text())['properties']
+        self.assertEqual(restored['template']['containers'][0]['image'],IMAGE)
+        self.assertIsNone(restored['configuration']['ingress'])
+        self.assertTrue(restored['configuration']['dapr']['enabled'])
 
     def test_rollback_rejects_corrupted_copy_template(self):
         self.prepare_updated_candidate()

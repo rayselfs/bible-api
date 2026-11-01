@@ -26,26 +26,17 @@ const docTemplate = `{
     "paths": {
         "/ready": {
             "get": {
-                "description": "Checks local Dapr outbound health only, without acquiring a database connection.",
+                "description": "Ready after startup and migrations complete, without polling dependencies.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Operations"
                 ],
-                "summary": "Dapr outbound readiness",
+                "summary": "Process readiness",
                 "responses": {
                     "200": {
                         "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {

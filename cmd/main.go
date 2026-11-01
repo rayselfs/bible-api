@@ -130,6 +130,9 @@ func runServer() {
 		appLogger.Fatalf("Failed to load config: %v", err)
 	}
 	appLogger.Info("Configuration loaded successfully")
+	if cfg.GatewayToken == "" {
+		appLogger.Fatal("BIBLE_GATEWAY_TOKEN is required to serve requests")
+	}
 
 	// Connect to Database
 	database.Connect(cfg)
@@ -144,8 +147,9 @@ func runServer() {
 	// Setup Router
 	r := gin.New()
 	r.Use(server.RequestLogger(), gin.Recovery())
+	r.Use(server.GatewayAuth(cfg.GatewayToken))
 	api.SetupRoutes(r)
-	r.GET("/ready", server.NewReadinessHandler(cfg.DaprHTTPPort, cfg.DaprAPIToken))
+	r.GET("/ready", server.ProcessReadiness)
 
 	// Setup Server with timeouts
 	srv := &http.Server{

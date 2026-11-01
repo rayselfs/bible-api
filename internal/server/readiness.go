@@ -9,13 +9,6 @@ import (
 )
 
 // NewReadinessHandler checks outbound health to avoid waiting on Dapr's app channel.
-// @Summary Dapr outbound readiness
-// @Description Checks local Dapr outbound health only, without acquiring a database connection.
-// @Tags Operations
-// @Produce json
-// @Success 200 {object} map[string]string
-// @Failure 503 {object} map[string]string
-// @Router /ready [get]
 func NewReadinessHandler(port int, token string) gin.HandlerFunc {
 	client := &http.Client{
 		Timeout:       500 * time.Millisecond,

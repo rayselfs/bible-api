@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned image and Dapr-readiness ACA release gates. Never print or save a revision's environment values."""
+"""Pinned Bible runtime release gates. Never print or save environment values."""
 import copy
 import datetime
 import hashlib
@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 import time
+
+RUNTIME = json.loads((Path(__file__).resolve().parent.parent / 'infra/runtime.json').read_text())
 
 
 def require(condition, message):
@@ -36,9 +38,15 @@ def app():
     result = az('containerapp', 'show', *target())['properties']
     config = result['configuration']
     require(config['activeRevisionsMode'] == 'Single', 'Expected Single revision mode')
-    dapr = config['dapr']
-    require(dapr['enabled'] is True and dapr['appId'] == os.environ['DAPR_APP_ID'] and dapr['appPort'] == 9999,
-            'Unexpected Dapr identity')
+    dapr = config.get('dapr') or {}
+    if dapr.get('enabled') is True:
+        require(dapr.get('appId') == 'bible-api' and dapr.get('appPort') == 9999, 'Unexpected Dapr identity')
+    ingress = config.get('ingress')
+    if ingress is not None:
+        require(ingress.get('external') is False and ingress.get('targetPort') == 9999 and
+                ingress.get('allowInsecure') is False and not ingress.get('customDomains') and
+                not ingress.get('additionalPortMappings'), 'Unexpected Bible ingress exposure')
+    require(dapr.get('enabled') is True or ingress is not None, 'No Bible invocation route')
     return result
 
 
@@ -87,6 +95,83 @@ def ready_template(template):
     return result
 
 
+def candidate_template(template):
+    result = ready_template(template)
+    env = result['containers'][0].setdefault('env', [])
+    existing = [{k: v for k, v in e.items() if v not in (None, '')}
+                for e in env if e['name'] == 'BIBLE_GATEWAY_TOKEN']
+    require(not existing or existing == [{'name': 'BIBLE_GATEWAY_TOKEN', 'secretRef': 'bible-gateway-token'}],
+            'Unexpected Bible gateway credential binding')
+    if not existing:
+        env.append({'name': 'BIBLE_GATEWAY_TOKEN', 'secretRef': 'bible-gateway-token'})
+    result['scale'] = copy.deepcopy(RUNTIME['scale'])
+    return result
+
+
+def transport(configuration):
+    result = {k: copy.deepcopy(configuration.get(k)) for k in ('ingress', 'dapr')}
+    if result['ingress'] is not None:
+        result['ingress'].pop('fqdn', None)
+    return result
+
+
+def candidate_configuration(configuration):
+    result = transport(configuration)
+    result['ingress'] = copy.deepcopy(RUNTIME['ingress'])
+    result['dapr'] = {**(result['dapr'] or {}), 'enabled': RUNTIME['daprEnabled']}
+    return result
+
+
+def configuration_matches(actual, expected):
+    for key in ('ingress', 'dapr'):
+        value = expected.get(key)
+        if value is None:
+            if actual.get(key) is not None:
+                return False
+        else:
+            for field, wanted in value.items():
+                observed = (actual.get(key) or {}).get(field)
+                if field == 'transport' and isinstance(observed, str):
+                    observed, wanted = observed.lower(), wanted.lower()
+                if observed != wanted:
+                    return False
+    return True
+
+
+def runtime_url():
+    subscription = os.environ['AZURE_SUBSCRIPTION_ID']
+    require(re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', subscription) is not None,
+            'Invalid subscription identity')
+    require(all(re.fullmatch(r'[a-z0-9-]+', os.environ[key]) for key in ('RESOURCE_GROUP', 'API_APP_NAME')),
+            'Invalid application target')
+    return ('https://management.azure.com/subscriptions/'+subscription+'/resourceGroups/'+os.environ['RESOURCE_GROUP']+
+           '/providers/Microsoft.App/containerApps/'+os.environ['API_APP_NAME']+'?api-version=2026-01-01')
+
+
+def patch_runtime(template, configuration):
+    return az('rest', '--method', 'PATCH', '--url', runtime_url(), '--body', '@/dev/stdin',
+              body={'properties': {'template': template, 'configuration': configuration}})
+
+
+def configure():
+    data = snapshot()
+    current = app()
+    desired = candidate_configuration(data['configuration'])
+    require(current['latestRevisionName'] == current['latestReadyRevisionName'] == os.environ['CANDIDATE_REVISION'],
+            'Authenticate the ready image before enabling ingress')
+    state = revision(os.environ['CANDIDATE_REVISION'])
+    require(state['active'] is True and state['healthState'] == 'Healthy' and
+            state['runningState'] in ('Running', 'RunningAtMaxScale') and
+            state['template']['containers'][0]['image'] == os.environ['IMAGE_REF'] and
+            template_hash(state['template']) == data['candidateTemplateHash'],
+            'Authenticated image lost readiness or changed before configuring ingress')
+    require(transport(current['configuration']) == data['configuration'], 'Transport changed before configuration')
+    exported(CONFIGURATION_UPDATE_STARTED='true')
+    az('rest', '--method', 'PATCH', '--url', runtime_url(), '--body', '@/dev/stdin',
+       body={'properties': {'configuration': desired}})
+    require(configuration_matches(app()['configuration'], desired), 'Transport configuration was not applied')
+
+
 def exported(**values):
     with open(os.environ['GITHUB_ENV'], 'a') as output:
         for key, value in values.items():
@@ -119,9 +204,11 @@ def check_release_boundaries(template, image, allowed_revisions):
     for rule in rules:
         if rule.get('custom', {}).get('auth') == []:
             rule['custom'].pop('auth')
-    require(scale.get('minReplicas') == 1 and scale.get('maxReplicas') == 8 and rules == [
-        {'name': 'cpu-scaler', 'custom': {'type': 'cpu', 'metadata': {'type': 'Utilization', 'value': '70'}}}],
-        'Baseline must retain reviewed min1/max8/CPU70 request scaling')
+    cpu = {'name': 'cpu-scaler', 'custom': {'type': 'cpu', 'metadata': {'type': 'Utilization', 'value': '70'}}}
+    http = {'name': 'http-concurrency', 'http': {'metadata': {'concurrentRequests': '20'}}}
+    require(scale.get('minReplicas') in (0, 1) and scale.get('maxReplicas') == 8 and
+            (rules == [cpu, http] or (rules == [cpu] and scale.get('minReplicas') == 1)),
+            'Unexpected Bible scaling or missing zero-activation trigger')
     jobs = az('containerapp', 'job', 'list', '-g', os.environ['RESOURCE_GROUP'])
     if any(job['name'] == 'bible-import' for job in jobs):
         executions = az('containerapp', 'job', 'execution', 'list', '-g', os.environ['RESOURCE_GROUP'], '-n', 'bible-import')
@@ -150,8 +237,10 @@ def capture():
     require(check_release_boundaries(template, image, {name}) == {name}, 'Baseline is missing from revision inventory')
     snapshot = Path(os.environ['RUNNER_TEMP']) / 'bible-rollback-snapshot.json'
     snapshot.write_text(json.dumps({'revision': name, 'image': image, 'readinessPath': health_path,
-                                    'templateHash': template_hash(template)}))
+                                    'templateHash': template_hash(template),
+                                    'configuration': transport(current['configuration'])}))
     exported(PREVIOUS_READY_REVISION=name, PREVIOUS_IMAGE_REF=image, PREVIOUS_READINESS_PATH=health_path,
+             PREVIOUS_BIBLE_TRANSPORT='http' if current['configuration'].get('ingress') else 'dapr',
              BIBLE_ROLLBACK_SNAPSHOT=str(snapshot))
     print('Captured healthy rollback baseline and reviewed Bible release boundaries')
 
@@ -162,7 +251,7 @@ def snapshot():
             and data['readinessPath'] == os.environ['PREVIOUS_READINESS_PATH'], 'Rollback snapshot identity changed')
     template = revision(data['revision'])['template']
     require(template_hash(template) == data['templateHash'], 'Original template changed')
-    data['candidateTemplateHash'] = template_hash(ready_template(template))
+    data['candidateTemplateHash'] = template_hash(candidate_template(template))
     return data
 
 
@@ -173,31 +262,27 @@ def update():
     require(baseline['active'] is True and baseline['healthState'] == 'Healthy' and baseline['runningState'] in ('Running', 'RunningAtMaxScale'), 'Baseline lost health before update')
     current = app()
     require(current['latestReadyRevisionName'] == current['latestRevisionName'] == data['revision'], 'Baseline changed before update')
+    require(transport(current['configuration']) == data['configuration'], 'App-scope configuration changed after capture')
+    require('bible-gateway-token' in {s['name'] for s in current['configuration'].get('secrets', [])},
+            'Dedicated Bible gateway secret must be staged first')
     image = os.environ['IMAGE_REF']
     require(immutable(image) == image, 'Candidate must use an immutable image')
     suffix = f"release-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
     require(re.fullmatch(r'release-[0-9]+-[0-9]+', suffix) is not None, 'Invalid release identity')
     candidate = os.environ['API_APP_NAME'] + '--' + suffix
-    template = ready_template(baseline['template'])
+    runtime_url()
+    template = candidate_template(baseline['template'])
     template['containers'][0]['image'] = image
     template['revisionSuffix'] = suffix
-    subscription = os.environ['AZURE_SUBSCRIPTION_ID']
-    require(re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', subscription) is not None,
-            'Invalid subscription identity')
-    require(all(re.fullmatch(r'[a-z0-9-]+', os.environ[key]) for key in ('RESOURCE_GROUP', 'API_APP_NAME')),
-            'Invalid application target')
-    url = ('https://management.azure.com/subscriptions/'+subscription+'/resourceGroups/'+os.environ['RESOURCE_GROUP']+
-           '/providers/Microsoft.App/containerApps/'+os.environ['API_APP_NAME']+'?api-version=2026-01-01')
     # JSON Merge Patch preserves configuration/secrets; stdin avoids saving environment values or reading secrets via YAML.
     # Persist ownership before a possibly ambiguous network result from the mutation.
     exported(CANDIDATE_REVISION=candidate, RUNTIME_UPDATE_STARTED='true')
-    result = az('rest', '--method', 'PATCH', '--url', url, '--body', '@/dev/stdin',
-                body={'properties': {'template': template}})
+    result = patch_runtime(template, data['configuration'])
     require(result.get('properties', {}).get('latestRevisionName') in (None, data['revision'], candidate),
             'Runtime update returned another candidate')
 
 
-def wait(name, image, expected_hash=None, previous=None):
+def wait(name, image, expected_hash=None, previous=None, expected_configuration=None):
     deadline = time.monotonic() + 600
     for attempt in range(60):
         require(time.monotonic() < deadline, 'Candidate readiness deadline exceeded')
@@ -207,6 +292,8 @@ def wait(name, image, expected_hash=None, previous=None):
                 time.sleep(10)
             continue
         require(current['latestRevisionName'] == name, 'Candidate superseded; refusing stale success')
+        if expected_configuration is not None:
+            require(configuration_matches(current['configuration'], expected_configuration), 'Runtime transport differs from reviewed candidate')
         state = revision(name)
         require(state['template']['containers'][0]['image'] == image, 'Candidate image digest mismatch')
         if expected_hash is not None:
@@ -230,6 +317,9 @@ def rollback():
     data = snapshot()
     candidate = os.environ['CANDIDATE_REVISION']
     current = app()
+    require(configuration_matches(current['configuration'], candidate_configuration(data['configuration'])) or
+            configuration_matches(current['configuration'], data['configuration']),
+            'App-scope settings changed after update; rollback ownership unknown')
     require(current['latestRevisionName'] == candidate and current['latestReadyRevisionName'] in (candidate, data['revision']),
             'Rollback ownership UNKNOWN or superseded; refusing another revision')
     state = revision(candidate)
@@ -237,12 +327,14 @@ def rollback():
             template_hash(state['template']) == data['candidateTemplateHash'], 'Candidate ownership/template mismatch')
     check_release_boundaries(revision(data['revision'])['template'], data['image'], {candidate, data['revision']})
     suffix = f"rollback-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
-    result = az('containerapp', 'revision', 'copy', *target(), '--from-revision', data['revision'],
-                '--image', data['image'], '--revision-suffix', suffix)
     name = os.environ['API_APP_NAME'] + '--' + suffix
+    template = copy.deepcopy(revision(data['revision'])['template'])
+    template['containers'][0]['image'] = data['image']
+    template['revisionSuffix'] = suffix
+    result = patch_runtime(template, data['configuration'])
     require(result['properties']['latestRevisionName'] == name, 'Unknown rollback candidate')
     exported(ROLLBACK_REVISION=name)
-    wait(name, data['image'], data['templateHash'])
+    wait(name, data['image'], data['templateHash'], expected_configuration=data['configuration'])
 
 
 if __name__ == '__main__':
@@ -250,8 +342,11 @@ if __name__ == '__main__':
         command = sys.argv[1]
         if command == 'capture': capture()
         elif command == 'update': update()
+        elif command == 'configure': configure()
         elif command == 'wait': wait(os.environ['CANDIDATE_REVISION'], os.environ['IMAGE_REF'],
-                                     snapshot()['candidateTemplateHash'], os.environ['PREVIOUS_READY_REVISION'])
+                                     snapshot()['candidateTemplateHash'], os.environ['PREVIOUS_READY_REVISION'],
+                                     candidate_configuration(snapshot()['configuration']) if
+                                     os.environ.get('CONFIGURATION_UPDATE_STARTED') == 'true' else snapshot()['configuration'])
         elif command == 'rollback': rollback()
         else: raise ValueError('Unknown release operation')
     except (ValueError, KeyError, OSError, TypeError) as exc:

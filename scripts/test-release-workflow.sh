@@ -26,6 +26,7 @@ grep -q 'docker build -t bible-api:verify .' "$ci"
 
 grep -q '^  push:' "$release"
 grep -q 'branches: \[main\]' "$release"
+grep -Fq '      - infra/**' "$release"
 grep -q '      - \.dockerignore' "$release"
 grep -q 'workflow_dispatch:' "$release"
 grep -q 'deploy-bible-api-production' "$release"
@@ -57,7 +58,7 @@ python3 scripts/test_release_runtime.py
 python3 scripts/test_smoke_release.py
 
 if grep -Eq 'az deployment|terraform|containerapp job|--set-env-vars|--ingress|client-secret|password:' "$release"; then
-  echo 'Bible release must update only the existing Container App image and readiness with OIDC' >&2
+  echo 'Bible release must use the reviewed existing-app runtime gate with OIDC' >&2
   exit 1
 fi
 

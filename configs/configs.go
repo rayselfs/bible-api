@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"github.com/caarlos0/env/v11"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type Env struct {
+	GatewayToken      string `env:"BIBLE_GATEWAY_TOKEN"`
 	DaprHTTPPort      int
 	DaprAPIToken      string        `env:"DAPR_API_TOKEN"`
 	DBMaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS" envDefault:"8"`
@@ -30,6 +32,9 @@ func InitConfig() (*Env, error) {
 	err := env.Parse(&cfg)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.GatewayToken != "" && !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(cfg.GatewayToken) {
+		return nil, fmt.Errorf("invalid Bible gateway credential")
 	}
 	if cfg.DBMaxOpenConns <= 0 || cfg.DBMaxIdleConns < 0 || cfg.DBMaxIdleConns > cfg.DBMaxOpenConns {
 		return nil, fmt.Errorf("invalid database pool limits")
