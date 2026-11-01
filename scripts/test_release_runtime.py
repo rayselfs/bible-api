@@ -204,7 +204,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
         initial['configuration']['ingress']=RUNTIME['ingress']
         cold=json.loads(json.dumps(BASE['properties']))
         cold['template']['scale']=RUNTIME['scale']
-        cold['runningState']='ScaleTo0'
+        cold['runningState']='ScaledToZero'
         ready=json.loads(json.dumps(cold));ready['runningState']='Running'
         for superseded in (False,True):
             current=json.loads(json.dumps(initial))
@@ -221,7 +221,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError,'superseded'): runtime.capture()
                 else:
                     runtime.capture()
-                    wake.assert_called_once_with('https://www.alive.org.tw/api/bible/v2/versions',timeout=60)
+                    wake.assert_called_once_with('https://www.alive.org.tw/api/bible/v2/versions',timeout=120)
 
     def test_update_reactivates_baseline_that_scaled_down_during_image_build(self):
         state=self.data['revisions']['bible-api--old']['properties']
@@ -243,7 +243,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
         with mock.patch.dict(os.environ,self.env), mock.patch.object(runtime,'urlopen',return_value=response) as wake, \
                 contextlib.chdir(self.source):
             runtime.update()
-            wake.assert_called_once_with('https://www.alive.org.tw/api/bible/v2/versions',timeout=60)
+            wake.assert_called_once_with('https://www.alive.org.tw/api/bible/v2/versions',timeout=120)
         self.assertTrue((self.path/'updated').exists())
 
     def test_capture_preserves_original_probe_and_template(self):
@@ -457,6 +457,15 @@ class ReleaseRuntimeTests(unittest.TestCase):
             self.assertNotIn('RUNTIME_UPDATE_STARTED', self.env)
             self.assertFalse((self.path/'updated').exists())
             self.env[key] = original
+
+    def test_inactive_zero_revisions_do_not_hold_database_pools(self):
+        orphan=json.loads(json.dumps(BASE));orphan['name']='bible-api--zero'
+        orphan['properties'].update(active=False,replicas=0)
+        for state in ('ScaleTo0','ScaledToZero'):
+            with self.subTest(state=state):
+                orphan['properties']['runningState']=state
+                self.data['revisions'][orphan['name']]=json.loads(json.dumps(orphan))
+                self.run_cli('capture')
 
     def test_inactive_terminating_revision_blocks_capture(self):
         orphan=json.loads(json.dumps(BASE));orphan['name']='bible-api--terminating'
