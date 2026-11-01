@@ -79,6 +79,20 @@ print(json.dumps(result))
 '''
 
 class ReleaseRuntimeTests(unittest.TestCase):
+    def test_template_hash_normalizes_only_platform_scale_defaults(self):
+        spec=importlib.util.spec_from_file_location('runtime_defaults',ROOT/'scripts/release-runtime.py')
+        runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+        absent=json.loads(json.dumps(TEMPLATE))
+        explicit=json.loads(json.dumps(TEMPLATE))
+        explicit['scale'].update(cooldownPeriod=300,pollingInterval=30)
+        nulls=json.loads(json.dumps(TEMPLATE))
+        nulls['scale'].update(cooldownPeriod=None,pollingInterval=None)
+        self.assertEqual(runtime.template_hash(absent),runtime.template_hash(explicit))
+        self.assertEqual(runtime.template_hash(nulls),runtime.template_hash(explicit))
+        for field,value in [('cooldownPeriod',301),('pollingInterval',31)]:
+            changed=json.loads(json.dumps(explicit));changed['scale'][field]=value
+            self.assertNotEqual(runtime.template_hash(changed),runtime.template_hash(explicit))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
