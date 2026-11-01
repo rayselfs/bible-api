@@ -39,13 +39,13 @@ paths:
     get:
       tags: [Operations]
       operationId: getReadiness
-      summary: Dapr outbound readiness
-      description: Checks only the local Dapr outbound health endpoint with a 500ms timeout. No database check. Not exposed by the public gateway. A sidecar-less local server returns 503.
+      summary: Process readiness
+      description: Ready after database startup and migrations complete. Does not poll Dapr or acquire a database connection. Not exposed by the public gateway.
       x-hhc-visibility: operations
       x-hhc-callers: []
       responses:
         '200':
-          description: Dapr outbound health returned 204.
+          description: The server completed startup and is serving requests.
           content:
             application/json:
               schema:
@@ -55,17 +55,6 @@ paths:
                   status:
                     type: string
                     const: UP
-        '503':
-          description: Dapr is unavailable, unhealthy, or the check was canceled.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [status]
-                properties:
-                  status:
-                    type: string
-                    const: DOWN
   /api/bible/v1/versions:
     get:
       tags: [Public]

@@ -181,7 +181,7 @@ func TestLegacyReadinessContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(spec.Paths["/ready"]["get"].Responses) != 2 {
+		if len(spec.Paths["/ready"]["get"].Responses) != 1 {
 			t.Fatal("legacy readiness responses missing")
 		}
 	}

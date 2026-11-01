@@ -1,0 +1,20 @@
+{
+  "daprEnabled": true,
+  "ingress": {
+    "external": false,
+    "targetPort": 9999,
+    "allowInsecure": false,
+    "transport": "Auto",
+    "traffic": [{ "latestRevision": true, "weight": 100 }]
+  },
+  "scale": {
+    "minReplicas": 1,
+    "maxReplicas": 8,
+    "cooldownPeriod": 300,
+    "pollingInterval": 30,
+    "rules": [
+      { "name": "cpu-scaler", "custom": { "type": "cpu", "metadata": { "type": "Utilization", "value": "70" } } },
+      { "name": "http-concurrency", "http": { "metadata": { "concurrentRequests": "20" } } }
+    ]
+  }
+}

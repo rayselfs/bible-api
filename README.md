@@ -5,6 +5,18 @@ Its workflow defaults to preview and requires a reviewed coordinator slot before
 
 A modern, RESTful Bible API built with Go. This API provides access to Bible content across multiple versions with semantic search capabilities powered by pgvector and OpenAI embeddings.
 
+The server requires `BIBLE_GATEWAY_TOKEN` (64 lowercase hexadecimal characters).
+The Gateway replaces `X-Bible-Gateway-Token` on Bible requests; the API rejects
+missing, incorrect or duplicate credentials before trusting permission headers.
+Public clients keep using the existing Gateway URLs and never receive this token.
+`/health` and `/ready` remain unauthenticated platform probes.
+
+`infra/runtime.json` owns the staged private HTTP ingress and scaling profile.
+Normal release installs and verifies the authenticated image before enabling
+internal-only ingress. This first stage retains Dapr and minimum one replica until
+Gateway HTTP routing is accepted. Rollback restores the original app-scope
+ingress/Dapr configuration together with the original immutable image/template.
+
 ## 🚀 Features
 
 - **RESTful API**: Clean, well-documented REST endpoints
@@ -24,7 +36,7 @@ A modern, RESTful Bible API built with Go. This API provides access to Bible con
 ### Health Check
 
 - `GET /health` - Process liveness (unchanged)
-- `GET /ready` - Local Dapr outbound readiness; operational endpoint, not publicly routed
+- `GET /ready` - Process readiness after database startup and migrations; operational endpoint, not publicly routed
 
 ### Bible Versions
 
@@ -135,6 +147,8 @@ bible-api/
    export POSTGRES_DB=bible
    export POSTGRES_SSLMODE=disable  # disable, require, verify-full, etc.
    export SERVER_PORT=9999
+   # Use a distinct random 64-character lowercase hex credential outside local development.
+   export BIBLE_GATEWAY_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
    # Azure OpenAI configuration (required for embeddings)
    export AZURE_OPENAI_BASE_URL="https://your-service.openai.azure.com/openai/v1/"

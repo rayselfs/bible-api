@@ -12,6 +12,7 @@ on:
       - cmd/**
       - configs/**
       - internal/**
+      - infra/**
       - migrations/**
       - scripts/smoke-release.sh
       - scripts/smoke-release.py
@@ -121,7 +122,7 @@ jobs:
       - name: Capture rollback revision
         run: python3 scripts/release-runtime.py capture
       - name: Verify healthy rollback baseline
-        run: SMOKE_HEALTH_PATH="$PREVIOUS_READINESS_PATH" ./scripts/smoke-release.sh
+        run: SMOKE_BIBLE_TRANSPORT="$PREVIOUS_BIBLE_TRANSPORT" SMOKE_HEALTH_PATH="$PREVIOUS_READINESS_PATH" ./scripts/smoke-release.sh
       - name: Build and push image
         run: |
           az acr build --registry "$ACR_NAME" --image "${IMAGE_REPOSITORY}:${IMAGE_TAG}" --file Dockerfile .
@@ -130,13 +131,22 @@ jobs:
           digest="$(az acr repository show --name "$ACR_NAME" --image "${IMAGE_REPOSITORY}:${IMAGE_TAG}" --query digest -o tsv --only-show-errors)"
           [[ "$digest" == sha256:* ]]
           echo "IMAGE_REF=${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}@${digest}" >> "$GITHUB_ENV"
-      - name: Update Bible API image and readiness
+      - name: Stage dedicated Bible gateway credential
+        env:
+          BIBLE_GATEWAY_TOKEN: ${{ secrets.BIBLE_GATEWAY_TOKEN }}
+        run: |
+          [[ "$BIBLE_GATEWAY_TOKEN" =~ ^[0-9a-f]{64}$ ]]
+          az containerapp secret set -g "$RESOURCE_GROUP" -n "$API_APP_NAME" \
+            --secrets "bible-gateway-token=$BIBLE_GATEWAY_TOKEN" --only-show-errors --output none
+      - name: Update Bible API image and private HTTP runtime
         id: deploy_runtime
         run: python3 scripts/release-runtime.py update
       - name: Wait for Bible API revision
         run: python3 scripts/release-runtime.py wait
+      - name: Enable private HTTP only after authenticated image readiness
+        run: python3 scripts/release-runtime.py configure
       - name: Smoke Bible API release
-        run: ./scripts/smoke-release.sh
+        run: SMOKE_BIBLE_TRANSPORT=http ./scripts/smoke-release.sh
       - name: Export production release
         id: release_outputs
         run: |
@@ -149,7 +159,7 @@ jobs:
         run: python3 scripts/release-runtime.py rollback
       - name: Verify rolled back runtime
         if: ${{ failure() && steps.rollback_runtime.outcome == 'success' }}
-        run: SMOKE_HEALTH_PATH="$PREVIOUS_READINESS_PATH" ./scripts/smoke-release.sh
+        run: SMOKE_BIBLE_TRANSPORT="$PREVIOUS_BIBLE_TRANSPORT" SMOKE_HEALTH_PATH="$PREVIOUS_READINESS_PATH" ./scripts/smoke-release.sh
 
   publish_openapi:
     needs: deploy

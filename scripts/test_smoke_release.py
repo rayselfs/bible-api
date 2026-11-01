@@ -25,8 +25,12 @@ from pathlib import Path
 p=Path(os.environ['CASE_DIR']);n=int((p/'count').read_text()) if (p/'count').exists() else 0
 (p/'count').write_text(str(n+1))
 a=sys.argv[1:];url=a[-1]
+if url.startswith('https://www.alive.org.tw/'):
+    assert '--header' not in a
+else:
+    assert a[a.index('--header')+1]=='X-Bible-Gateway-Token: fixture-credential'
 code=503 if os.environ.get('SMOKE_CASE')=='mixed' and n==3 else 200
-body={'status':'UP'} if '/method/' in url else [{'id':1,'code':'KJV','name':'Fixture','updated_at':1,'locale':'en'}]
+body={'status':'UP'} if url.endswith(('/ready','/health')) else [{'id':1,'code':'KJV','name':'Fixture','updated_at':1,'locale':'en'}]
 if os.environ.get('SMOKE_CASE')=='bad-json' and n==4:body={'error':'not a versions list'}
 Path(a[a.index('-O')+1]).write_text(json.dumps(body))
 print('  HTTP/1.1 '+str(code)+' status',file=sys.stderr)
@@ -41,10 +45,11 @@ class SmokeTests(unittest.TestCase):
                 for name,body in [('script',FAKE_SCRIPT),('wget',FAKE_WGET),('sleep','#!/bin/sh\nexit 0\n')]:
                     (p/name).write_text(body);(p/name).chmod(0o755)
                 env=dict(os.environ, PATH=directory+os.pathsep+os.environ['PATH'], CASE_DIR=directory,
-                    RESOURCE_GROUP='fixture', API_GATEWAY_APP_NAME='fixture-gateway', SMOKE_CASE=case)
+                    RESOURCE_GROUP='fixture', API_GATEWAY_APP_NAME='fixture-gateway', SMOKE_CASE=case,
+                    BIBLE_GATEWAY_TOKEN='fixture-credential')
                 proc=subprocess.run(['bash',str(ROOT/'scripts/smoke-release.sh')],env=env,capture_output=True,text=True,timeout=15)
                 self.assertEqual(proc.returncode,want,proc.stdout+proc.stderr)
-                if case not in ('management','incomplete'):self.assertEqual((p/'count').read_text(),'9')
+                if case not in ('management','incomplete'):self.assertEqual((p/'count').read_text(),'12')
     def test_smoke_rejects_nonoperational_health_path_before_console(self):
         env=dict(os.environ,RESOURCE_GROUP='fixture',API_GATEWAY_APP_NAME='fixture-gateway',SMOKE_HEALTH_PATH='/bad;echo nope')
         proc=subprocess.run(['bash',str(ROOT/'scripts/smoke-release.sh')],env=env,capture_output=True,text=True,timeout=5)
