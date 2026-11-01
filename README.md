@@ -1,8 +1,5 @@
 # Bible API
 
-Operational isolation tooling: [disposable ACA Dapr-readiness acceptance](scripts/aca-readiness-isolation/README.md).
-Its workflow defaults to preview and requires a reviewed coordinator slot before any cloud execution.
-
 A modern, RESTful Bible API built with Go. This API provides access to Bible content across multiple versions with semantic search capabilities powered by pgvector and OpenAI embeddings.
 
 The server requires `BIBLE_GATEWAY_TOKEN` (64 lowercase hexadecimal characters).
@@ -11,10 +8,10 @@ missing, incorrect or duplicate credentials before trusting permission headers.
 Public clients keep using the existing Gateway URLs and never receive this token.
 `/health` and `/ready` remain unauthenticated platform probes.
 
-`infra/runtime.json` owns the staged private HTTP ingress and scaling profile.
+`infra/runtime.json` owns the private HTTP ingress and scaling profile.
 Normal release installs and verifies the authenticated image before enabling
-internal-only ingress. This first stage retains Dapr and minimum one replica until
-Gateway HTTP routing is accepted. Rollback restores the original app-scope
+internal-only ingress. The accepted HTTP cutover lets the service run without
+Dapr and scale to zero when idle. Rollback restores the original app-scope
 ingress/Dapr configuration together with the original immutable image/template.
 
 ## 🚀 Features
@@ -714,22 +711,41 @@ Vector downloads keep their existing 384-dimensional little-endian binary format
 CI uses disposable PostgreSQL 17 + pgvector for pool/stream integration tests. Locally set `BIBLE_TEST_DATABASE_URL` to a disposable loopback fixture and run `go test -race ./... -count=1 -p=1`. The tests create private schemas and synthetic vectors, then remove them. With no fixture URL, integration tests skip; production databases must never be used. Pool defaults remain initial budgets pending representative performance tests.
 
 
-## Dapr readiness and release handoff
+## Private HTTP release and scale to zero
 
-`GET /ready` returns `200 {"status":"UP"}` only when local Dapr `/v1.0/healthz/outbound` returns 204 within 500ms. It otherwise returns `503 {"status":"DOWN"}` and never acquires a PG connection. `DAPR_HTTP_PORT` defaults to 3500 (decimal 1..65535); optional `DAPR_API_TOKEN` is forwarded only to loopback. There are no retries, redirects, environment proxies, or fail-open switch. Without a sidecar, use `/health` for local liveness; readiness being 503 is expected. The server starts listening without waiting for Dapr, avoiding an app-channel health deadlock.
+Bible runs without Dapr, behind internal-only HTTPS ingress. HTTP20 supplies the
+zero-to-one activation trigger; CPU70 remains an additional scale-out signal.
+The profile keeps max8, 0.25 CPU/0.5GiB and the existing capped PostgreSQL pool.
+Idle scale-down uses the platform cooldown; sustained traffic may keep a replica
+running. Only measured idle/wake observations establish scale-to-zero acceptance.
 
-The normal release switches only readiness from `/health` to `/ready` in the same update as its immutable image and unique run-owned revision suffix. Liveness, PG settings, pool defaults, replicas, Dapr configuration and gateway routes stay unchanged. The bounded probe delivery requires the local real-Dapr fault suite, required CI, a fresh exact provider preview, and the normal candidate/artifact/smoke/compatible-rollback checks below. Complete cleanup of any owned isolation allocation before production rollout. The separate `aca-readiness-gate-v1` experiment does not gate this bounded delivery or grant an availability certificate: zero-loss handoff remains `NOT_CERTIFIED` and actual managed-daprd bind-failure behavior remains `NOT_TESTED`. Runtime sidecar restarts on a single serving replica remain a separate availability risk.
+`GET /ready` serves local process readiness after database startup and migrations.
+It does not poll dependencies or acquire a database connection. `/health` remains
+liveness. Startup requires the dedicated Gateway token; optional unregistered
+routes remain 404. Public clients keep the same URLs.
 
-Release preflight requires a non-secret repository variable `BIBLE_RELEASE_REVIEW` with a review no older than six hours, for example:
+Normal CI/CD captures a healthy exact baseline (waking a zero-scaled baseline
+through the public read route first), checks schema/model/startup compatibility,
+pool/import/revision budgets and a fresh `BIBLE_RELEASE_REVIEW`, then pins the
+candidate digest/template. Before activating min0 or disabling Dapr, the release
+requires a verified HTTP Gateway revision/image matching current live metadata.
+It verifies the new image before changing app-scope ingress/Dapr configuration.
 
-```json
-{"verifiedAt":"2026-10-20T00:00:00+00:00","baselineCommit":"<full deployed source commit>","baselineImage":"alive.azurecr.io/alive/bible-api@sha256:<64 hex>","baselinePoolMaxOpen":8,"importsFrozen":true,"evidence":"<reviewed baseline and compatibility evidence reference>"}
-```
+The non-secret review is at most six hours old and includes `baselineCommit`,
+`baselineImage`, `baselinePoolMaxOpen: 8`, `importsFrozen: true`, `verifiedAt` and
+an `evidence` reference, plus `gatewayHttpVerified: true`, `gatewayHttpRevision`
+and `gatewayHttpImage`. Use fresh actual source/image/route evidence, never
+example values. No schema, import, PG limits or connection-pool changes are
+implied by this profile.
 
-Replace all example values using fresh evidence before a release. The review attests the exact old binary has a finite pool. The workflow checks its digest, source migration/model/DB-startup compatibility, current pool overrides, existing max replicas, import executions, and quiet revisions before creating a candidate. A missing or stale review stops before update. It never adjusts PG or replicas. Coordinate the import freeze (or prove retirement); an execution-list snapshot alone is insufficient. If an import starts during rollout, stop new revisions and reassess; do not terminate it.
+Three complete smoke rounds verify internal HTTPS and public v1/v2 version reads.
+The Gateway credential stays on private calls and is never sent to public URLs.
+HTTP failures fail the release; management errors remain UNKNOWN. An owned failed
+candidate restores the previous immutable image/template and app-scope
+configuration; ownership drift or a new import blocks automatic rollback.
 
-The candidate update preserves min 1/max 8/CPU70 request scaling and MaxOpen 8. The guard refuses unexpected scaling, pool overrides or extra potentially running Bible revisions. These checks cover Bible's release boundary, not a certified aggregate PostgreSQL ceiling: concurrent jobs and other services remain separate capacity risks, and observed connection counts are not finite process bounds. Fresh platform health and headroom remain part of release coordination; this change neither raises PG limits nor changes admission controls.
-
-The release captures an active healthy baseline, verifies it through Dapr and public v1/v2 routes, fixes the candidate revision/digest, and requires three complete successful smoke rounds through one bounded console session. HTTP failures are failures; management 403/429/timeouts are UNKNOWN and never pass. No early deactivation of the old revision is issued. A preflight rejection never triggers a copy. Before rollback, the workflow checks its mutation marker, exact run-owned revision/digest/template, current import and Bible revision boundaries and absence of a superseding rollout. Unknown ownership or new import stops without adding a revision. Failed owned runtime rolls back with `revision copy --from-revision` plus the original immutable image, preserving the full original template. Candidate hash comparison permits only the unique readiness path change; every other template field except image and revision suffix stays exact. Rollback hash comparison uses the complete original template and original probe. The JSON Merge Patch sends only the captured template through stdin, without storing environment values or reading secrets; configuration and identities are omitted and preserved. An accepted asynchronous update waits for its own candidate and never accepts the still-serving old revision as success. Smoke uses the original `/health` or `/ready` path. Never roll an old `/health`-only binary into a template requiring `/ready`; do not down-migrate. If rollback cannot be verified, stop further revisions and preserve evidence. OpenAPI publication remains separate from healthy runtime and preserves the last-good pointer.
-
-`./scripts/test-release-workflow.sh` exercises fake Azure runtime gates and the actual remote smoke shell; `./scripts/test-readiness-isolation.sh` runs a pinned public Dapr artifact in a dedicated Docker network, occupies TCP50002, then releases/stops/restarts only that test sidecar. It leaves production untouched and cleans only its own resources. The PG suite checks saturated pools 1/2/8, existing stream cancellation, actual independent old/new/rollback process connections at 16/24/48/72, migration replay against a synthetic already-six-migrations baseline and old-process connection removal. The merged bootstrap fix makes the virgin migration chain compatible with current GORM models; CI also verifies fresh bootstrap and additive-column replay. Isolated handoff DBs use `scripts/readiness-fixture/migrated-bible-baseline.sql`, never a production DB. Both PR CI and main Release verify require the disposable PG fixture. These local tests and normal release smoke do not certify zero-loss ACA Dapr-only routing or managed-sidecar fault availability. Such a claim requires a separate successful isolated scenario with complete per-revision request evidence; partial or missing evidence remains UNKNOWN. This additional certification is separate from the bounded readiness-probe delivery; see the isolation README.
+Disposable PG17 tests retain migration replay, capped pool overlap, cancellation,
+permission/cache and saturation checks. Local readiness and credential tests do
+not need a Dapr runtime. Formal load, all-device acceptance and realized billing
+savings are separate. Presenter timeout changes merge separately; Ray schedules
+its release and accepts possible older-client timeouts in the meantime.

@@ -70,7 +70,6 @@ jobs:
           go test -race ./... -count=1 -p=1
           go vet ./...
           ./scripts/test-release-workflow.sh
-          ./scripts/test-readiness-isolation.sh
           docker build -t bible-api:verify .
 
   deploy:
@@ -90,7 +89,6 @@ jobs:
       IMAGE_REPOSITORY: alive/bible-api
       RESOURCE_GROUP: alive
       API_APP_NAME: bible-api
-      DAPR_APP_ID: bible-api
       API_GATEWAY_APP_NAME: api-gateway
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -106,7 +104,6 @@ jobs:
           [[ "$GITHUB_REF" == "refs/heads/main" ]]
           [[ "$RELEASE_CONFIRMATION" == "deploy-bible-api-production" ]]
           [[ "$API_APP_NAME" == "bible-api" ]]
-          [[ "$DAPR_APP_ID" == "bible-api" ]]
           for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
             test -n "${!name:-}" || { echo "Missing repository variable: ${name}" >&2; exit 1; }
           done

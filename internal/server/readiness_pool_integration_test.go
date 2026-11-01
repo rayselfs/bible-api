@@ -2,7 +2,6 @@ package server
 
 import (
 	"database/sql"
-	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -23,9 +22,7 @@ func TestReadinessDoesNotWaitForSaturatedPool(t *testing.T) {
 	if err != nil || u.Hostname() != "127.0.0.1" {
 		t.Fatal("requires loopback PG fixture")
 	}
-	dapr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
-	defer dapr.Close()
-	ready := NewReadinessHandler(readinessPort(t, dapr.Listener.Addr().String()), "")
+	ready := ProcessReadiness
 	for _, cap := range []int{1, 2, 8} {
 		t.Run(strconv.Itoa(cap), func(t *testing.T) {
 			db, err := gorm.Open(postgres.Open(raw), &gorm.Config{DisableAutomaticPing: true})

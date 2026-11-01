@@ -19,10 +19,11 @@ TEMPLATE = {'containers': [{'name': 'bible-api', 'image': IMAGE, 'probes': [
     {'type': 'Readiness', 'httpGet': {'path': '/health', 'port': 9999}},
     {'type': 'Liveness', 'httpGet': {'path': '/health', 'port': 9999}}], 'env': []}],
     'scale': {'minReplicas': 1, 'maxReplicas': 8, 'rules': [{'name': 'cpu-scaler', 'custom': {'type': 'cpu', 'metadata': {'type': 'Utilization', 'value': '70'}}}]}}
+TEMPLATE['scale']['rules'].append({'name':'http-concurrency','http':{'metadata':{'concurrentRequests':'20'}}})
 BASE = {'name': 'bible-api--old', 'properties': {'active': True, 'healthState': 'Healthy',
     'runningState': 'RunningAtMaxScale', 'template': TEMPLATE}}
 APP = {'properties': {'latestReadyRevisionName': 'bible-api--old', 'latestRevisionName': 'bible-api--old',
-    'configuration': {'activeRevisionsMode': 'Single', 'secrets': [{'name':'bible-gateway-token'}], 'dapr': {'enabled': True, 'appId': 'bible-api', 'appPort': 9999}}}}
+    'configuration': {'activeRevisionsMode': 'Single', 'ingress':RUNTIME['ingress'], 'secrets': [{'name':'bible-gateway-token'}], 'dapr': {'enabled': True, 'appId': 'bible-api', 'appPort': 9999}}}}
 
 FAKE_AZ = '''#!/usr/bin/env python3
 import json,os,sys
@@ -39,11 +40,13 @@ elif key=='containerapp replica list':result=data['replicas']
 elif key=='containerapp job list':result=data['jobs']
 elif key=='containerapp job execution':result=data['executions']
 elif args[:2]==['containerapp','show']:
-    if data.get('pending_configuration'):
-        if data.get('pending_reads',0)>0:data['pending_reads']-=1
-        else:data['app']['properties']['configuration'].update(data.pop('pending_configuration'))
-        (p/'azure.json').write_text(json.dumps(data))
-    result=data['app']
+    if args[args.index('-n')+1]=='api-gateway':result=data['gateway']
+    else:
+        if data.get('pending_configuration'):
+            if data.get('pending_reads',0)>0:data['pending_reads']-=1
+            else:data['app']['properties']['configuration'].update(data.pop('pending_configuration'))
+            (p/'azure.json').write_text(json.dumps(data))
+        result=data['app']
 elif args[0]=='rest':
     payload=json.load(sys.stdin)
     (p/'patch.json').write_text(json.dumps(payload))
@@ -116,12 +119,16 @@ class ReleaseRuntimeTests(unittest.TestCase):
         (self.path/'az').write_text(FAKE_AZ)
         (self.path/'az').chmod(0o755)
         self.data = {'app': json.loads(json.dumps(APP)), 'revisions': {'bible-api--old': json.loads(json.dumps(BASE))},
+            'gateway': {'properties': {'latestRevisionName':'api-gateway--http','latestReadyRevisionName':'api-gateway--http',
+                'template':{'containers':[{'image':'alive.azurecr.io/alive/api-gateway@sha256:'+'c'*64}]}}},
             'jobs': [], 'executions': [], 'replicas': [{'properties': {'containers': [{'name': 'bible-api', 'ready': True}, {'name': 'daprd', 'ready': True}]}}]}
         self.env = dict(os.environ, PATH=str(self.path)+os.pathsep+os.environ['PATH'], CASE_DIR=str(self.path),
-            RESOURCE_GROUP='fixture', API_APP_NAME='bible-api', DAPR_APP_ID='bible-api',
+            RESOURCE_GROUP='fixture', API_APP_NAME='bible-api', API_GATEWAY_APP_NAME='api-gateway',
             GITHUB_ENV=str(self.path/'github-env'), RUNNER_TEMP=str(self.path), GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
             IMAGE_REF=NEW_IMAGE, AZURE_SUBSCRIPTION_ID='11111111-1111-1111-1111-111111111111')
         self.review = {'baselineCommit': self.baseline_commit, 'baselineImage': IMAGE, 'baselinePoolMaxOpen': 8,
+            'gatewayHttpVerified':True, 'gatewayHttpRevision':'api-gateway--http',
+            'gatewayHttpImage':'alive.azurecr.io/alive/api-gateway@sha256:'+'c'*64,
             'importsFrozen': True,
             'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'evidence': 'fixture-reviewed-baseline'}
 
@@ -152,6 +159,42 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.run_cli('capture',False)
         self.assertFalse((self.path/'updated').exists())
 
+    def test_zero_activation_requires_current_gateway_http_evidence(self):
+        self.run_cli('capture')
+        for field, value in [('gatewayHttpVerified',False), ('gatewayHttpRevision','api-gateway--old'),
+                             ('gatewayHttpImage',IMAGE)]:
+            with self.subTest(field=field):
+                old=self.review[field]; self.review[field]=value
+                self.run_cli('update',False)
+                self.assertFalse((self.path/'updated').exists())
+                self.review[field]=old
+
+    def test_capture_wakes_zero_scaled_baseline_and_refuses_supersession(self):
+        spec=importlib.util.spec_from_file_location('runtime_zero',ROOT/'scripts/release-runtime.py')
+        runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+        initial=json.loads(json.dumps(APP['properties']))
+        initial['configuration']['ingress']=RUNTIME['ingress']
+        cold=json.loads(json.dumps(BASE['properties']))
+        cold['template']['scale']=RUNTIME['scale']
+        cold['runningState']='ScaleTo0'
+        ready=json.loads(json.dumps(cold));ready['runningState']='Running'
+        for superseded in (False,True):
+            current=json.loads(json.dumps(initial))
+            if superseded: current['latestRevisionName']='bible-api--foreign'
+            response=mock.MagicMock()
+            response.__enter__.return_value.status=200
+            response.__enter__.return_value.read.return_value=b'[]'
+            with mock.patch.dict(os.environ,self.env), mock.patch.object(runtime,'app',side_effect=[initial,current]), \
+                    mock.patch.object(runtime,'revision',side_effect=[cold,ready]), \
+                    mock.patch.object(runtime,'urlopen',return_value=response) as wake, \
+                    mock.patch.object(runtime,'immutable',return_value=IMAGE), \
+                    mock.patch.object(runtime,'check_release_boundaries',return_value={'bible-api--old'}):
+                if superseded:
+                    with self.assertRaisesRegex(ValueError,'superseded'): runtime.capture()
+                else:
+                    runtime.capture()
+                    wake.assert_called_once_with('https://www.alive.org.tw/api/bible/v2/versions',timeout=60)
+
     def test_capture_preserves_original_probe_and_template(self):
         self.run_cli('capture')
         self.assertEqual(self.env['PREVIOUS_READY_REVISION'], 'bible-api--old')
@@ -176,7 +219,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.assertFalse((self.path/'updated').exists())
 
     def test_capture_rejects_unreviewed_request_scaling(self):
-        for field, value in [('minReplicas', 0), ('maxReplicas', 3), ('rules', [])]:
+        for field, value in [('minReplicas', 2), ('maxReplicas', 3), ('rules', [])]:
             with self.subTest(field=field):
                 scale = self.data['revisions']['bible-api--old']['properties']['template']['scale']
                 old = scale[field]; scale[field] = value
@@ -249,7 +292,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
         expected['scale'] = RUNTIME['scale']
         expected['revisionSuffix'] = 'release-123-1'
         self.assertEqual(json.loads((self.path/'patch.json').read_text()), {'properties': {'template': expected,
-            'configuration': {'ingress':None,'dapr':APP['properties']['configuration']['dapr']}}})
+            'configuration': {'ingress':RUNTIME['ingress'],'dapr':APP['properties']['configuration']['dapr']}}})
         self.candidate(name,NEW_IMAGE)
         self.run_cli('wait')
         self.data['app']['properties']['latestRevisionName']='bible-api--unrelated'
@@ -271,7 +314,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.assertEqual(self.data['app']['properties']['configuration']['ingress']['targetPort'],9999)
         self.run_cli('wait')
         self.run_cli('rollback')
-        self.assertIsNone(self.data['app']['properties']['configuration']['ingress'])
+        self.assertEqual(self.data['app']['properties']['configuration']['ingress'],RUNTIME['ingress'])
         self.assertTrue(self.data['app']['properties']['configuration']['dapr']['enabled'])
 
     def test_configure_waits_for_owned_async_app_scope_readback(self):
@@ -401,7 +444,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.assertEqual(len(patches),2)
         restored=json.loads((self.path/'patch.json').read_text())['properties']
         self.assertEqual(restored['template']['containers'][0]['image'],IMAGE)
-        self.assertIsNone(restored['configuration']['ingress'])
+        self.assertEqual(restored['configuration']['ingress'],RUNTIME['ingress'])
         self.assertTrue(restored['configuration']['dapr']['enabled'])
 
     def test_rollback_rejects_corrupted_copy_template(self):
