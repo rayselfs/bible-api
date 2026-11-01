@@ -1,12 +1,37 @@
 package server
 
 import (
+	"bytes"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestGatewayCredentialIsRemovedBeforeHandlersAndPanicLogs(t *testing.T) {
+	for _, path := range []string{"/api/bible/v2/versions", "/ready"} {
+		t.Run(path, func(t *testing.T) {
+			token := strings.Repeat("a", 64)
+			var logs bytes.Buffer
+			r := gin.New()
+			r.Use(gin.RecoveryWithWriter(&logs), GatewayAuth(token))
+			r.GET(path, func(c *gin.Context) {
+				if c.GetHeader("X-Bible-Gateway-Token") != "" {
+					t.Error("credential reached the handler")
+				}
+				panic("fixture failure")
+			})
+			request := httptest.NewRequest("GET", path, nil)
+			request.Header.Set("X-Bible-Gateway-Token", token)
+			response := httptest.NewRecorder()
+			r.ServeHTTP(response, request)
+			if response.Code != 500 || !strings.Contains(logs.String(), "fixture failure") || strings.Contains(logs.String(), token) {
+				t.Fatal("panic diagnostics must preserve the failure without the gateway credential")
+			}
+		})
+	}
+}
 
 func TestGatewayAuth(t *testing.T) {
 	token := strings.Repeat("a", 64)

@@ -11,11 +11,12 @@ import (
 // GatewayAuth authenticates the caller before trusting its permission headers.
 func GatewayAuth(token string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		values := c.Request.Header.Values("X-Bible-Gateway-Token")
+		c.Request.Header.Del("X-Bible-Gateway-Token")
 		if !strings.HasPrefix(c.Request.URL.Path, "/api/bible/") {
 			c.Next()
 			return
 		}
-		values := c.Request.Header.Values("X-Bible-Gateway-Token")
 		if token == "" || len(values) != 1 || subtle.ConstantTimeCompare([]byte(values[0]), []byte(token)) != 1 {
 			c.Header("Cache-Control", "no-store")
 			c.AbortWithStatus(http.StatusUnauthorized)
