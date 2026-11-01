@@ -169,6 +169,18 @@ class ReleaseRuntimeTests(unittest.TestCase):
                 self.assertFalse((self.path/'updated').exists())
                 self.review[field]=old
 
+    def test_zero_activation_cannot_skip_private_http_preparation(self):
+        for missing in ('ingress','http-scaler'):
+            with self.subTest(missing=missing):
+                self.data['app']['properties']['configuration']['ingress']=None if missing=='ingress' else RUNTIME['ingress']
+                rules=self.data['revisions']['bible-api--old']['properties']['template']['scale']['rules']
+                original=json.loads(json.dumps(rules))
+                if missing=='http-scaler': rules[:]=[rule for rule in rules if 'http' not in rule]
+                self.run_cli('capture')
+                self.run_cli('update',False)
+                self.assertFalse((self.path/'updated').exists())
+                rules[:]=original
+
     def test_capture_wakes_zero_scaled_baseline_and_refuses_supersession(self):
         spec=importlib.util.spec_from_file_location('runtime_zero',ROOT/'scripts/release-runtime.py')
         runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
