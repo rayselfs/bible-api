@@ -40,3 +40,15 @@ func TestGatewayAuth(t *testing.T) {
 		})
 	}
 }
+
+func TestDaprDiscoveryRemainsOptionalDuringCutover(t *testing.T) {
+	r := gin.New()
+	r.Use(GatewayAuth(strings.Repeat("a", 64)))
+	for _, path := range []string{"/dapr/config", "/dapr/subscribe"} {
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, httptest.NewRequest("GET", path, nil))
+		if response.Code != 404 {
+			t.Fatalf("optional discovery %s returned %d, want 404", path, response.Code)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/subtle"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -10,7 +11,7 @@ import (
 // GatewayAuth authenticates the caller before trusting its permission headers.
 func GatewayAuth(token string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.Request.URL.Path == "/health" || c.Request.URL.Path == "/ready" {
+		if !strings.HasPrefix(c.Request.URL.Path, "/api/bible/") {
 			c.Next()
 			return
 		}
