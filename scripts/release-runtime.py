@@ -252,7 +252,7 @@ def check_release_boundaries(template, image, allowed_revisions):
     revisions = az('containerapp', 'revision', 'list', *target(), '--all')
     live = [r for r in revisions if r['properties'].get('active') is True or
             r['properties'].get('replicas', 0) > 0 or
-            r['properties'].get('runningState') not in ('Stopped', 'Inactive', 'ScaleTo0')]
+            r['properties'].get('runningState') not in ('Stopped', 'Inactive', 'ScaleTo0', 'ScaledToZero')]
     live_names = {r['name'] for r in live}
     require(live_names <= allowed_revisions, 'Another revision may still hold connections; wait for quiet window')
     return live_names
@@ -261,10 +261,10 @@ def check_release_boundaries(template, image, allowed_revisions):
 def running_baseline(current, name, baseline):
     require(current['latestRevisionName'] == current['latestReadyRevisionName'] == name,
             'Baseline changed before activation')
-    if baseline['runningState'] == 'ScaleTo0' and baseline['template']['scale'].get('minReplicas') == 0:
+    if baseline['runningState'] in ('ScaleTo0', 'ScaledToZero') and baseline['template']['scale'].get('minReplicas') == 0:
         require(current['configuration'].get('ingress'), 'No HTTP wake route for the baseline')
         # Wake via the real caller path; metadata reads alone cannot start a zero-scaled app.
-        with urlopen('https://www.alive.org.tw/api/bible/v2/versions', timeout=60) as response:
+        with urlopen('https://www.alive.org.tw/api/bible/v2/versions', timeout=120) as response:
             require(response.status == 200 and isinstance(json.loads(response.read(65537)), list),
                     'Baseline HTTP activation failed')
         for attempt in range(12):
