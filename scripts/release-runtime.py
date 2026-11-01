@@ -71,6 +71,10 @@ def immutable(image):
 def template_hash(template):
     template = copy.deepcopy(template)
     template.pop('revisionSuffix', None)
+    # Revision readback uses null for these platform defaults, even when explicitly set.
+    for field, default in (('cooldownPeriod', 300), ('pollingInterval', 30)):
+        if template['scale'].get(field) is None:
+            template['scale'][field] = default
     for container in template['containers']:
         container.pop('image', None)
     return hashlib.sha256(json.dumps(template, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
