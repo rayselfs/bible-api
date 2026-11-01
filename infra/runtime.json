@@ -1,5 +1,5 @@
 {
-  "daprEnabled": true,
+  "daprEnabled": false,
   "ingress": {
     "external": false,
     "targetPort": 9999,
@@ -8,7 +8,7 @@
     "traffic": [{ "latestRevision": true, "weight": 100 }]
   },
   "scale": {
-    "minReplicas": 1,
+    "minReplicas": 0,
     "maxReplicas": 8,
     "cooldownPeriod": 300,
     "pollingInterval": 30,

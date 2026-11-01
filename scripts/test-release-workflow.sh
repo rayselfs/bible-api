@@ -47,7 +47,7 @@ grep -q 'IMAGE_TAG=main-\${GITHUB_SHA::7}' "$release"
 grep -q 'IMAGE_REF=\${ACR_LOGIN_SERVER}/\${IMAGE_REPOSITORY}@\${digest}' "$release"
 grep -q 'PREVIOUS_READY_REVISION=' scripts/release-runtime.py
 grep -q 'PREVIOUS_IMAGE_REF=' scripts/release-runtime.py
-grep -q 'DAPR_APP_ID: bible-api' "$release"
+test ! -e .github/workflows/readiness-aca-isolation.yml
 grep -q 'python3 scripts/release-runtime.py capture' "$release"
 grep -q 'python3 scripts/release-runtime.py update' "$release"
 grep -q 'python3 scripts/release-runtime.py wait' "$release"

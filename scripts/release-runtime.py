@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+from urllib.request import urlopen
 
 RUNTIME = json.loads((Path(__file__).resolve().parent.parent / 'infra/runtime.json').read_text())
 
@@ -157,6 +158,18 @@ def patch_runtime(template, configuration):
               body={'properties': {'template': template, 'configuration': configuration}})
 
 
+def check_gateway_http():
+    if RUNTIME['daprEnabled'] and RUNTIME['scale']['minReplicas'] > 0:
+        return
+    review = json.loads(os.environ['BIBLE_RELEASE_REVIEW'])
+    require(review.get('gatewayHttpVerified') is True, 'Verified Gateway HTTP cutover is required')
+    require(os.environ['API_GATEWAY_APP_NAME'] == 'api-gateway', 'Unexpected Gateway target')
+    gateway = az('containerapp', 'show', '-g', os.environ['RESOURCE_GROUP'], '-n', 'api-gateway')['properties']
+    require(gateway['latestRevisionName'] == gateway['latestReadyRevisionName'] == review.get('gatewayHttpRevision') and
+            gateway['template']['containers'][0]['image'] == review.get('gatewayHttpImage'),
+            'Gateway HTTP evidence no longer matches the live revision/image')
+
+
 def configure():
     data = snapshot()
     current = app()
@@ -170,6 +183,7 @@ def configure():
             template_hash(state['template']) == data['candidateTemplateHash'],
             'Authenticated image lost readiness or changed before configuring ingress')
     require(transport(current['configuration']) == data['configuration'], 'Transport changed before configuration')
+    check_gateway_http()
     exported(CONFIGURATION_UPDATE_STARTED='true')
     az('rest', '--method', 'PATCH', '--url', runtime_url(), '--body', '@/dev/stdin',
        body={'properties': {'configuration': desired}})
@@ -240,10 +254,33 @@ def check_release_boundaries(template, image, allowed_revisions):
     return live_names
 
 
+def running_baseline(current, name, baseline):
+    require(current['latestRevisionName'] == current['latestReadyRevisionName'] == name,
+            'Baseline changed before activation')
+    if baseline['runningState'] == 'ScaleTo0' and baseline['template']['scale'].get('minReplicas') == 0:
+        require(current['configuration'].get('ingress'), 'No HTTP wake route for the baseline')
+        # Wake via the real caller path; metadata reads alone cannot start a zero-scaled app.
+        with urlopen('https://www.alive.org.tw/api/bible/v2/versions', timeout=60) as response:
+            require(response.status == 200 and isinstance(json.loads(response.read(65537)), list),
+                    'Baseline HTTP activation failed')
+        for attempt in range(12):
+            current = app()
+            require(current['latestRevisionName'] == current['latestReadyRevisionName'] == name,
+                    'Baseline was superseded during activation')
+            baseline = revision(name)
+            if baseline['runningState'] in ('Running', 'RunningAtMaxScale'):
+                break
+            if attempt < 11:
+                time.sleep(5)
+    return current, baseline
+
+
 def capture():
     current = app()
     name = current['latestReadyRevisionName']
+    require(current['latestRevisionName'] == name, 'An unfinished rollout is already present')
     baseline = revision(name)
+    current, baseline = running_baseline(current, name, baseline)
     require(baseline['active'] is True and baseline['healthState'] == 'Healthy' and
             baseline['runningState'] in ('Running', 'RunningAtMaxScale'), 'Rollback baseline is not active and healthy')
     require(current['latestRevisionName'] == name, 'An unfinished rollout is already present')
@@ -273,14 +310,18 @@ def snapshot():
 
 def update():
     data = snapshot()
-    baseline = revision(data['revision'])
+    current, baseline = running_baseline(app(), data['revision'], revision(data['revision']))
     require(check_release_boundaries(baseline['template'], data['image'], {data['revision']}) == {data['revision']}, 'Baseline is missing from revision inventory')
     require(baseline['active'] is True and baseline['healthState'] == 'Healthy' and baseline['runningState'] in ('Running', 'RunningAtMaxScale'), 'Baseline lost health before update')
-    current = app()
     require(current['latestReadyRevisionName'] == current['latestRevisionName'] == data['revision'], 'Baseline changed before update')
     require(transport(current['configuration']) == data['configuration'], 'App-scope configuration changed after capture')
     require('bible-gateway-token' in {s['name'] for s in current['configuration'].get('secrets', [])},
             'Dedicated Bible gateway secret must be staged first')
+    if RUNTIME['scale']['minReplicas'] == 0:
+        require(current['configuration'].get('ingress') and any(
+            'http' in rule for rule in baseline['template']['scale'].get('rules', [])),
+            'Establish the private HTTP ingress/scaler before activating zero replicas')
+    check_gateway_http()
     image = os.environ['IMAGE_REF']
     require(immutable(image) == image, 'Candidate must use an immutable image')
     suffix = f"release-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"

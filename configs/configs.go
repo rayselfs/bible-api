@@ -3,17 +3,12 @@ package configs
 import (
 	"fmt"
 	"github.com/caarlos0/env/v11"
-	"os"
 	"regexp"
-	"strconv"
-	"strings"
 	"time"
 )
 
 type Env struct {
-	GatewayToken      string `env:"BIBLE_GATEWAY_TOKEN"`
-	DaprHTTPPort      int
-	DaprAPIToken      string        `env:"DAPR_API_TOKEN"`
+	GatewayToken      string        `env:"BIBLE_GATEWAY_TOKEN"`
 	DBMaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS" envDefault:"8"`
 	DBMaxIdleConns    int           `env:"DB_MAX_IDLE_CONNS" envDefault:"2"`
 	DBConnMaxLifetime time.Duration `env:"DB_CONN_MAX_LIFETIME" envDefault:"30m"`
@@ -41,17 +36,6 @@ func InitConfig() (*Env, error) {
 	}
 	if cfg.DBConnMaxLifetime <= 0 || cfg.DBConnMaxIdleTime <= 0 {
 		return nil, fmt.Errorf("invalid database pool connection durations")
-	}
-	port := os.Getenv("DAPR_HTTP_PORT")
-	if port == "" {
-		port = "3500"
-	}
-	if strings.Trim(port, "0123456789") != "" {
-		return nil, fmt.Errorf("invalid Dapr HTTP port")
-	}
-	cfg.DaprHTTPPort, err = strconv.Atoi(port)
-	if err != nil || cfg.DaprHTTPPort < 1 || cfg.DaprHTTPPort > 65535 {
-		return nil, fmt.Errorf("invalid Dapr HTTP port")
 	}
 	return &cfg, nil
 }
