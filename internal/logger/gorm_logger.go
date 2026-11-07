@@ -87,7 +87,7 @@ func (l *GormLogger) Error(ctx context.Context, msg string, data ...interface{})
 	}
 }
 
-// Trace logs SQL queries
+// Trace measures the combined checkout, ORM, query and result lifecycle.
 func (l *GormLogger) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
 	if l.logLevel <= logger.Silent {
 		return
@@ -100,14 +100,14 @@ func (l *GormLogger) Trace(ctx context.Context, begin time.Time, fc func() (stri
 		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 		Source:    "gorm",
 		Duration:  fmt.Sprintf("%.3fms", float64(elapsed.Nanoseconds())/1e6),
-		Phase:     "query",
+		Phase:     "db_operation_lifecycle",
 		Outcome:   "success",
 	}
 
 	switch {
 	case err != nil && l.logLevel >= logger.Error:
 		entry.Level = ERROR
-		entry.Message = "database query failed"
+		entry.Message = "database operation failed"
 		entry.Outcome = "failure"
 		entry.ErrorClass = "database"
 		switch {
@@ -131,10 +131,10 @@ func (l *GormLogger) Trace(ctx context.Context, begin time.Time, fc func() (stri
 		}
 	case elapsed > 200*time.Millisecond && l.logLevel >= logger.Warn:
 		entry.Level = WARN
-		entry.Message = "Slow SQL query detected"
+		entry.Message = "database operation slow"
 	case l.logLevel >= logger.Info:
 		entry.Level = INFO
-		entry.Message = "SQL query executed"
+		entry.Message = "database operation completed"
 	default:
 		return
 	}

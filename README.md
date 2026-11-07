@@ -749,3 +749,14 @@ permission/cache and saturation checks. Local readiness and credential tests do
 not need a Dapr runtime. Formal load, all-device acceptance and realized billing
 savings are separate. Presenter timeout changes merge separately; Ray schedules
 its release and accepts possible older-client timeouts in the meantime.
+
+### Database diagnostic timing
+
+Failed and over-200ms GORM operations emit sanitized `db_operation_lifecycle`
+outcome and duration records without rendering SQL, arguments or raw errors.
+This duration includes pool checkout, ORM work, SQL execution and result handling;
+it does not distinguish connection establishment, session reset or server-only SQL
+latency. Runtime connections identify the ACA revision through `application_name`
+for reviewed session-drain checks. Normal ASCII revision names are preserved;
+non-printable/non-ASCII names use a deterministic `revision-` hash, and overlong
+ASCII names use a bounded prefix plus hash.

@@ -28,7 +28,7 @@ func TestDatabaseDiagnosticsDoNotRenderPrivateSQL(t *testing.T) {
 			var out bytes.Buffer
 			l := NewGormLogger(&Logger{Logger: log.New(&out, "", 0)}, gl.Warn)
 			l.Trace(context.Background(), time.Now().Add(-tc.age), func() (string, int64) { t.Fatal("SQL callback must never execute"); return "private SQL", 1 }, tc.err)
-			if !strings.Contains(out.String(), tc.want) || !strings.Contains(out.String(), `"duration"`) {
+			if !strings.Contains(out.String(), tc.want) || !strings.Contains(out.String(), `"duration"`) || !strings.Contains(out.String(), `"phase":"db_operation_lifecycle"`) {
 				t.Fatalf("missing evidence: %s", out.String())
 			}
 			for _, forbidden := range []string{"private", `"sql":`, `"rows":`} {

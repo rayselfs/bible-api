@@ -16,3 +16,12 @@ func TestRevisionApplicationName(t *testing.T) {
 		t.Fatalf("identity lost: %q %q", a, b)
 	}
 }
+
+func TestRevisionApplicationNameRejectsNonPrintableOrNonASCII(t *testing.T) {
+	for _, input := range []string{"revision\nprivate", "版本", "revision\x7f", "revision\x00"} {
+		got := revisionApplicationName(input)
+		if !strings.HasPrefix(got, "revision-") || len(got) != 25 || got != revisionApplicationName(input) {
+			t.Fatalf("unsafe or unstable name %q", got)
+		}
+	}
+}

@@ -96,9 +96,14 @@ func Close() {
 
 // Preserve the complete revision normally; hash overlong names to retain identity.
 func revisionApplicationName(revision string) string {
+	sum := sha256.Sum256([]byte(revision))
+	for _, c := range []byte(revision) {
+		if c < 32 || c > 126 {
+			return fmt.Sprintf("revision-%x", sum[:8])
+		}
+	}
 	if len(revision) <= 63 {
 		return revision
 	}
-	sum := sha256.Sum256([]byte(revision))
 	return fmt.Sprintf("%s-%x", revision[:46], sum[:8])
 }
