@@ -1,8 +1,12 @@
 package database
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"log"
+	"os"
 
 	"hhc/bible-api/configs"
 	"hhc/bible-api/internal/logger"
@@ -24,9 +28,17 @@ func Connect(cfg *configs.Env) {
 
 	var err error
 	// Configure both timers before the first connection starts the Go 1.24 cleaner.
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: customGormLogger, DisableAutomaticPing: true})
+	connectionConfig, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		appLogger.Fatalf("Failed to connect to database: %v", err)
+		appLogger.Fatal("Invalid database configuration")
+	}
+	if revision := os.Getenv("CONTAINER_APP_REVISION"); revision != "" {
+		connectionConfig.RuntimeParams["application_name"] = revisionApplicationName(revision)
+	}
+	connection := stdlib.OpenDB(*connectionConfig)
+	DB, err = gorm.Open(postgres.New(postgres.Config{Conn: connection}), &gorm.Config{Logger: customGormLogger, DisableAutomaticPing: true})
+	if err != nil {
+		appLogger.Fatal("Failed to connect to database")
 	}
 
 	sqlDB, err := DB.DB()
@@ -38,7 +50,7 @@ func Connect(cfg *configs.Env) {
 	sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
 	sqlDB.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
 	if err := sqlDB.Ping(); err != nil {
-		appLogger.Fatalf("Failed to connect to database: %v", err)
+		appLogger.Fatal("Failed to connect to database")
 	}
 
 	appLogger.Info("Database connection successful")
@@ -80,4 +92,13 @@ func Close() {
 			}
 		}
 	}
+}
+
+// Preserve the complete revision normally; hash overlong names to retain identity.
+func revisionApplicationName(revision string) string {
+	if len(revision) <= 63 {
+		return revision
+	}
+	sum := sha256.Sum256([]byte(revision))
+	return fmt.Sprintf("%s-%x", revision[:46], sum[:8])
 }

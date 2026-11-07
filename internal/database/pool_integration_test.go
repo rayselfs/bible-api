@@ -21,11 +21,16 @@ func TestPoolCapAndCancellation(t *testing.T) {
 	}
 	password, _ := u.User.Password()
 	cfg := &configs.Env{PostgresHost: u.Hostname(), PostgresPort: u.Port(), PostgresUser: u.User.Username(), PostgresPass: password, PostgresDB: u.Path[1:], PostgresSSLMode: "disable", DBMaxOpenConns: 2, DBMaxIdleConns: 1, DBConnMaxLifetime: 80 * time.Millisecond, DBConnMaxIdleTime: 5 * time.Minute}
+	t.Setenv("CONTAINER_APP_REVISION", "bible-api--test-revision")
 	Connect(cfg)
 	t.Cleanup(Close)
 	db, err := DB.DB()
 	if err != nil {
 		t.Fatal(err)
+	}
+	var applicationName string
+	if err := db.QueryRowContext(t.Context(), "SHOW application_name").Scan(&applicationName); err != nil || applicationName != "bible-api--test-revision" {
+		t.Fatalf("revision tag not applied: name=%q err=%v", applicationName, err)
 	}
 	if db.Stats().MaxOpenConnections != 2 {
 		t.Fatal("runtime pool has no configured limit")
