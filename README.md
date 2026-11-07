@@ -704,7 +704,7 @@ a shared HTTP cache. Vector bytes and existing version access checks are unchang
 
 ## PostgreSQL connection pool
 
-`DB_MAX_OPEN_CONNS` defaults to `8`, `DB_MAX_IDLE_CONNS` to `2`, `DB_CONN_MAX_LIFETIME` to `30m`, and `DB_CONN_MAX_IDLE_TIME` to `5m`. Open must be positive; idle may be zero but cannot exceed open; durations must be positive. Invalid settings stop startup. The server and importer read these same settings; an import can use `DB_MAX_OPEN_CONNS=4 DB_MAX_IDLE_CONNS=1` independently. Existing deployed jobs are not changed by this PR.
+`DB_MAX_OPEN_CONNS` defaults to `4`, `DB_MAX_IDLE_CONNS` to `2`, `DB_CONN_MAX_LIFETIME` to `30m`, and `DB_CONN_MAX_IDLE_TIME` to `5m`. Open must be positive; idle may be zero but cannot exceed open; durations must be positive. Invalid settings stop startup. The server and importer read these same settings; an import can use `DB_MAX_OPEN_CONNS=4 DB_MAX_IDLE_CONNS=1` independently. Existing deployed jobs are not changed by this PR.
 
 Vector downloads keep their existing 384-dimensional little-endian binary format. Queries and buffered sends honor cancellation so a disconnected or slow consumer cannot retain a PostgreSQL connection indefinitely.
 
