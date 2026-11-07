@@ -146,7 +146,7 @@ func runServer() {
 
 	// Setup Router
 	r := gin.New()
-	r.Use(server.RequestLogger(), gin.Recovery())
+	r.Use(server.RequestLogger(), server.SafeRecovery())
 	r.Use(server.GatewayAuth(cfg.GatewayToken))
 	api.SetupRoutes(r)
 	r.GET("/ready", server.ProcessReadiness)
