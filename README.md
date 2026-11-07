@@ -749,3 +749,19 @@ permission/cache and saturation checks. Local readiness and credential tests do
 not need a Dapr runtime. Formal load, all-device acceptance and realized billing
 savings are separate. Presenter timeout changes merge separately; Ray schedules
 its release and accepts possible older-client timeouts in the meantime.
+
+### Sanitized request and database diagnostics
+
+Request diagnostics retain bounded request/trace correlation and HTTP outcomes;
+recovery reports omit request contents. Failed and over-200ms GORM operations
+emit sanitized `db_operation_lifecycle` outcome and duration records without
+rendering SQL, arguments or raw errors. This duration includes pool checkout,
+ORM work, SQL execution and result handling; it does not distinguish connection
+establishment, session reset or server-only SQL latency. Database sessions do not
+receive a new revision tag. Pool defaults, database startup and release policy
+remain unchanged.
+
+HTTP request/trace IDs are logged at ingress but are not injected into request
+context. GORM records have no trace ID and cannot be joined to individual HTTP
+requests. This is HTTP correlation plus independent database lifecycle logging,
+not OTLP export, database spans or complete end-to-end tracing.
