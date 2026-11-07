@@ -243,12 +243,25 @@ def check_release_boundaries(template, image, allowed_revisions):
     at = datetime.datetime.fromisoformat(review['verifiedAt'])
     require(at.tzinfo is not None and datetime.timedelta(0) <= now-at <= datetime.timedelta(hours=6),
             'PG release review missing, stale, or future-dated')
-    require(review['evidence'] and review['baselineImage'] == image and review['baselinePoolMaxOpen'] == 8,
+    baseline_pool = review['baselinePoolMaxOpen']
+    require(type(baseline_pool) is int and baseline_pool in (4, 8), 'Unreviewed baseline pool ceiling')
+    def source_pool(source):
+        result = subprocess.run(['git', 'show', f'{source}:configs/configs.go'],
+                                capture_output=True, text=True, timeout=15)
+        matches = re.findall(r'^\s*DBMaxOpenConns\s+int\s+`env:"DB_MAX_OPEN_CONNS" envDefault:"([48])"`\s*$',
+                             result.stdout, re.MULTILINE)
+        require(result.returncode == 0 and len(matches) == 1, 'Unknown source pool default')
+        return int(matches[0])
+    require(source_pool(commit) == baseline_pool and source_pool('HEAD') == 4,
+            'Reviewed baseline or candidate source pool does not match')
+    require(review['evidence'] and review['baselineImage'] == image,
             'Rollback image pool is not certified by this review')
     require(review['importsFrozen'] is True, 'Import freeze/retirement not reviewed')
     for env in template['containers'][0].get('env', []):
-        limits = {'DB_MAX_OPEN_CONNS': '8', 'DB_MAX_IDLE_CONNS': '2',
+        limits = {'DB_MAX_OPEN_CONNS': '4', 'DB_MAX_IDLE_CONNS': '2',
                   'DB_CONN_MAX_LIFETIME': '30m', 'DB_CONN_MAX_IDLE_TIME': '5m'}
+        if env['name'] == 'DB_MAX_OPEN_CONNS':
+            require(baseline_pool == 4, 'Pool override disagrees with reviewed baseline')
         if env['name'] in limits:
             require(env.get('value') == limits[env['name']], 'Unexpected pool override or secret reference')
     scale = template['scale']

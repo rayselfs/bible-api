@@ -732,7 +732,7 @@ requires a verified HTTP Gateway revision/image matching current live metadata.
 It verifies the new image before changing app-scope ingress/Dapr configuration.
 
 The non-secret review is at most six hours old and includes `baselineCommit`,
-`baselineImage`, `baselinePoolMaxOpen: 8`, `importsFrozen: true`, `verifiedAt` and
+`baselineImage`, `baselinePoolMaxOpen` (4 or 8), `importsFrozen: true`, `verifiedAt` and
 an `evidence` reference, plus `gatewayHttpVerified: true`, `gatewayHttpRevision`
 and `gatewayHttpImage`. Use fresh actual source/image/route evidence, never
 example values. Migrations and models must remain unchanged from `baselineCommit`.
@@ -743,6 +743,9 @@ commit, and each commit's Git blob for that file. Review the factory diff and
 rollback compatibility before recording these values; an old PR head does not
 approve a different merge commit. Missing or mismatched approval fails before
 runtime writes. This exception does not authorize migration or model changes.
+The reviewed baseline pool must match its source default; the candidate source
+default must be 4. A maximum-open override must be 4 and match the baseline
+review, so an inherited override cannot retain the old ceiling of 8.
 No schema, import or PG server-limit changes are implied by this profile.
 
 Three complete smoke rounds verify internal HTTPS and public v1/v2 version reads.
