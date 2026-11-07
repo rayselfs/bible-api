@@ -129,9 +129,16 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.git('init','-q')
         (self.source/'migrations').mkdir()
         (self.source/'migrations/baseline.sql').write_text('SELECT 1;\n')
+        (self.source/'internal/database').mkdir(parents=True)
+        (self.source/'internal/database/database.go').write_text('package database\n')
+        (self.source/'configs').mkdir()
+        (self.source/'configs/configs.go').write_text('DBMaxOpenConns int `env:"DB_MAX_OPEN_CONNS" envDefault:"8"`\n')
         self.git('add','.')
         self.git('commit','-qm','synthetic migration baseline')
         self.baseline_commit=self.git('rev-parse','HEAD').stdout.strip()
+        (self.source/'configs/configs.go').write_text('DBMaxOpenConns int `env:"DB_MAX_OPEN_CONNS" envDefault:"4"`\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'candidate pool four')
         (self.path/'az').write_text(FAKE_AZ)
         (self.path/'az').chmod(0o755)
         self.data = {'app': json.loads(json.dumps(APP)), 'revisions': {'bible-api--old': json.loads(json.dumps(BASE))},
@@ -173,6 +180,73 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.git('add','.')
         self.git('commit','-qm','incompatible migration change')
         self.run_cli('capture',False)
+        self.assertFalse((self.path/'updated').exists())
+
+    def test_pool_review_supports_eight_to_four_and_four_to_four(self):
+        self.run_cli('capture')
+        self.review['baselineCommit'] = self.git('rev-parse', 'HEAD').stdout.strip()
+        self.review['baselinePoolMaxOpen'] = 4
+        self.run_cli('capture')
+        self.data['revisions']['bible-api--old']['properties']['template']['containers'][0]['env'] = [
+            {'name': 'DB_MAX_OPEN_CONNS', 'value': '4'}]
+        self.run_cli('capture')
+
+    def test_pool_review_rejects_wrong_review_source_and_inherited_override(self):
+        self.review['baselinePoolMaxOpen'] = 4
+        self.run_cli('capture', False)
+        self.review['baselinePoolMaxOpen'] = 8
+        env = self.data['revisions']['bible-api--old']['properties']['template']['containers'][0]['env']
+        for entry in [{'name':'DB_MAX_OPEN_CONNS','value':'8'},
+                      {'name':'DB_MAX_OPEN_CONNS','secretRef':'pool'},
+                      {'name':'DB_MAX_OPEN_CONNS','value':'4'}]:
+            env[:] = [entry]
+            self.run_cli('capture', False)
+        env.clear()
+        for default in (8, 12):
+            (self.source/'configs/configs.go').write_text(
+                f'DBMaxOpenConns int `env:"DB_MAX_OPEN_CONNS" envDefault:"{default}"`\n')
+            self.git('add', '.')
+            self.git('commit', '-qm', 'unreviewed candidate pool')
+            self.run_cli('capture', False)
+        self.assertFalse((self.path/'updated').exists())
+
+    def reviewed_startup_change(self):
+        (self.source/'internal/database/database.go').write_text('package database\n// reviewed factory\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'reviewed startup change')
+        self.review['startupReview'] = {
+            'baselineCommit': self.baseline_commit,
+            'candidateCommit': self.git('rev-parse', 'HEAD').stdout.strip(),
+            'baselineBlob': self.git('rev-parse', self.baseline_commit+':internal/database/database.go').stdout.strip(),
+            'candidateBlob': self.git('rev-parse', 'HEAD:internal/database/database.go').stdout.strip(),
+        }
+
+    def test_exact_startup_review_allows_only_reviewed_change(self):
+        self.reviewed_startup_change()
+        self.run_cli('capture')
+        approval = self.review.pop('startupReview')
+        self.run_cli('capture', False)
+        self.review['startupReview'] = approval
+        for field in approval:
+            with self.subTest(field=field):
+                original = approval[field]
+                approval[field] = '0' * 40
+                self.run_cli('capture', False)
+                approval[field] = original
+        self.review['verifiedAt'] = '2020-01-01T00:00:00+00:00'
+        self.run_cli('capture', False)
+        self.assertFalse((self.path/'updated').exists())
+
+    def test_startup_review_cannot_authorize_later_commit_or_migration(self):
+        self.reviewed_startup_change()
+        self.git('commit', '--allow-empty', '-qm', 'unreviewed candidate')
+        self.run_cli('capture', False)
+        self.review['startupReview']['candidateCommit'] = self.git('rev-parse', 'HEAD').stdout.strip()
+        (self.source/'migrations/baseline.sql').write_text('SELECT 2;\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'unreviewed migration')
+        self.review['startupReview']['candidateCommit'] = self.git('rev-parse', 'HEAD').stdout.strip()
+        self.run_cli('capture', False)
         self.assertFalse((self.path/'updated').exists())
 
     def test_zero_activation_requires_current_gateway_http_evidence(self):

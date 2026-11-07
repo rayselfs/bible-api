@@ -704,7 +704,7 @@ a shared HTTP cache. Vector bytes and existing version access checks are unchang
 
 ## PostgreSQL connection pool
 
-`DB_MAX_OPEN_CONNS` defaults to `8`, `DB_MAX_IDLE_CONNS` to `2`, `DB_CONN_MAX_LIFETIME` to `30m`, and `DB_CONN_MAX_IDLE_TIME` to `5m`. Open must be positive; idle may be zero but cannot exceed open; durations must be positive. Invalid settings stop startup. The server and importer read these same settings; an import can use `DB_MAX_OPEN_CONNS=4 DB_MAX_IDLE_CONNS=1` independently. Existing deployed jobs are not changed by this PR.
+`DB_MAX_OPEN_CONNS` defaults to `4`, `DB_MAX_IDLE_CONNS` to `2`, `DB_CONN_MAX_LIFETIME` to `30m`, and `DB_CONN_MAX_IDLE_TIME` to `5m`. Open must be positive; idle may be zero but cannot exceed open; durations must be positive. Invalid settings stop startup. The server and importer read these same settings; an import can use `DB_MAX_OPEN_CONNS=4 DB_MAX_IDLE_CONNS=1` independently. Existing deployed jobs are not changed by this PR.
 
 Vector downloads keep their existing 384-dimensional little-endian binary format. Queries and buffered sends honor cancellation so a disconnected or slow consumer cannot retain a PostgreSQL connection indefinitely.
 
@@ -732,11 +732,21 @@ requires a verified HTTP Gateway revision/image matching current live metadata.
 It verifies the new image before changing app-scope ingress/Dapr configuration.
 
 The non-secret review is at most six hours old and includes `baselineCommit`,
-`baselineImage`, `baselinePoolMaxOpen: 8`, `importsFrozen: true`, `verifiedAt` and
+`baselineImage`, `baselinePoolMaxOpen` (4 or 8), `importsFrozen: true`, `verifiedAt` and
 an `evidence` reference, plus `gatewayHttpVerified: true`, `gatewayHttpRevision`
 and `gatewayHttpImage`. Use fresh actual source/image/route evidence, never
-example values. No schema, import, PG limits or connection-pool changes are
-implied by this profile.
+example values. Migrations and models must remain unchanged from `baselineCommit`.
+If `internal/database/database.go` changes, the same fresh review must include
+`startupReview` with exactly `baselineCommit`, `candidateCommit`, `baselineBlob`
+and `candidateBlob`. These must match the baseline source, the checked-out release
+commit, and each commit's Git blob for that file. Review the factory diff and
+rollback compatibility before recording these values; an old PR head does not
+approve a different merge commit. Missing or mismatched approval fails before
+runtime writes. This exception does not authorize migration or model changes.
+The reviewed baseline pool must match its source default; the candidate source
+default must be 4. A maximum-open override must be 4 and match the baseline
+review, so an inherited override cannot retain the old ceiling of 8.
+No schema, import or PG server-limit changes are implied by this profile.
 
 Three complete smoke rounds verify internal HTTPS and public v1/v2 version reads.
 The Gateway credential stays on private calls and is never sent to public URLs.
@@ -749,3 +759,14 @@ permission/cache and saturation checks. Local readiness and credential tests do
 not need a Dapr runtime. Formal load, all-device acceptance and realized billing
 savings are separate. Presenter timeout changes merge separately; Ray schedules
 its release and accepts possible older-client timeouts in the meantime.
+
+### Database diagnostic timing
+
+Failed and over-200ms GORM operations emit sanitized `db_operation_lifecycle`
+outcome and duration records without rendering SQL, arguments or raw errors.
+This duration includes pool checkout, ORM work, SQL execution and result handling;
+it does not distinguish connection establishment, session reset or server-only SQL
+latency. Runtime connections identify the ACA revision through `application_name`
+for reviewed session-drain checks. Normal ASCII revision names are preserved;
+non-printable/non-ASCII names use a deterministic `revision-` hash, and overlong
+ASCII names use a bounded prefix plus hash.
