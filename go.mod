@@ -6,7 +6,6 @@ require (
 	github.com/caarlos0/env/v11 v11.3.1
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-gormigrate/gormigrate/v2 v2.1.5
-	github.com/jackc/pgx/v5 v5.7.6
 	github.com/openai/openai-go/v2 v2.7.1
 	github.com/pgvector/pgvector-go v0.3.0
 	github.com/swaggo/files v1.0.1
@@ -41,6 +40,7 @@ require (
 	github.com/goccy/go-yaml v1.19.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.7.6 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect

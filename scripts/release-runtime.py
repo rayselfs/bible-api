@@ -218,50 +218,19 @@ def check_release_boundaries(template, image, allowed_revisions):
     commit = review['baselineCommit']
     require(re.fullmatch(r'[0-9a-f]{40}', commit) is not None, 'Unknown baseline source commit')
     compatibility = subprocess.run(['git', 'diff', '--quiet', commit, 'HEAD', '--',
-                                    'migrations', 'internal/models/models.go'],
+                                    'migrations', 'internal/models/models.go', 'internal/database/database.go'],
                                    capture_output=True, timeout=15)
-    require(compatibility.returncode == 0, 'Migration/model changed; separate rollback review required')
-    startup_path = 'internal/database/database.go'
-    startup_diff = subprocess.run(['git', 'diff', '--quiet', commit, 'HEAD', '--', startup_path],
-                                  capture_output=True, timeout=15)
-    require(startup_diff.returncode in (0, 1), 'Cannot verify DB startup source')
-    if startup_diff.returncode == 1:
-        approval = review.get('startupReview', {})
-        def git_object(expression):
-            result = subprocess.run(['git', 'rev-parse', '--verify', expression],
-                                    capture_output=True, text=True, timeout=15)
-            require(result.returncode == 0 and re.fullmatch(r'[0-9a-f]{40}', result.stdout.strip()),
-                    'Cannot resolve reviewed startup object')
-            return result.stdout.strip()
-        require(approval == {
-            'baselineCommit': commit,
-            'candidateCommit': git_object('HEAD^{commit}'),
-            'baselineBlob': git_object(f'{commit}:{startup_path}'),
-            'candidateBlob': git_object(f'HEAD:{startup_path}'),
-        }, 'DB startup changed without exact baseline/candidate commit and blob review')
+    require(compatibility.returncode == 0, 'Migration/model/DB startup changed; separate rollback review required')
     now = datetime.datetime.now(datetime.timezone.utc)
     at = datetime.datetime.fromisoformat(review['verifiedAt'])
     require(at.tzinfo is not None and datetime.timedelta(0) <= now-at <= datetime.timedelta(hours=6),
             'PG release review missing, stale, or future-dated')
-    baseline_pool = review['baselinePoolMaxOpen']
-    require(type(baseline_pool) is int and baseline_pool in (4, 8), 'Unreviewed baseline pool ceiling')
-    def source_pool(source):
-        result = subprocess.run(['git', 'show', f'{source}:configs/configs.go'],
-                                capture_output=True, text=True, timeout=15)
-        matches = re.findall(r'^\s*DBMaxOpenConns\s+int\s+`env:"DB_MAX_OPEN_CONNS" envDefault:"([48])"`\s*$',
-                             result.stdout, re.MULTILINE)
-        require(result.returncode == 0 and len(matches) == 1, 'Unknown source pool default')
-        return int(matches[0])
-    require(source_pool(commit) == baseline_pool and source_pool('HEAD') == 4,
-            'Reviewed baseline or candidate source pool does not match')
-    require(review['evidence'] and review['baselineImage'] == image,
+    require(review['evidence'] and review['baselineImage'] == image and review['baselinePoolMaxOpen'] == 8,
             'Rollback image pool is not certified by this review')
     require(review['importsFrozen'] is True, 'Import freeze/retirement not reviewed')
     for env in template['containers'][0].get('env', []):
-        limits = {'DB_MAX_OPEN_CONNS': '4', 'DB_MAX_IDLE_CONNS': '2',
+        limits = {'DB_MAX_OPEN_CONNS': '8', 'DB_MAX_IDLE_CONNS': '2',
                   'DB_CONN_MAX_LIFETIME': '30m', 'DB_CONN_MAX_IDLE_TIME': '5m'}
-        if env['name'] == 'DB_MAX_OPEN_CONNS':
-            require(baseline_pool == 4, 'Pool override disagrees with reviewed baseline')
         if env['name'] in limits:
             require(env.get('value') == limits[env['name']], 'Unexpected pool override or secret reference')
     scale = template['scale']

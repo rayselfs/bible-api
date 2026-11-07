@@ -9,7 +9,7 @@ import (
 
 type Env struct {
 	GatewayToken      string        `env:"BIBLE_GATEWAY_TOKEN"`
-	DBMaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS" envDefault:"4"`
+	DBMaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS" envDefault:"8"`
 	DBMaxIdleConns    int           `env:"DB_MAX_IDLE_CONNS" envDefault:"2"`
 	DBConnMaxLifetime time.Duration `env:"DB_CONN_MAX_LIFETIME" envDefault:"30m"`
 	DBConnMaxIdleTime time.Duration `env:"DB_CONN_MAX_IDLE_TIME" envDefault:"5m"`

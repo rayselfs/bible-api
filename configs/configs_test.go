@@ -29,7 +29,7 @@ func TestPoolConfigDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DBMaxOpenConns != 4 || cfg.DBMaxIdleConns != 2 || cfg.DBConnMaxLifetime != 30*time.Minute || cfg.DBConnMaxIdleTime != 5*time.Minute {
+	if cfg.DBMaxOpenConns != 8 || cfg.DBMaxIdleConns != 2 || cfg.DBConnMaxLifetime != 30*time.Minute || cfg.DBConnMaxIdleTime != 5*time.Minute {
 		t.Fatal("unexpected pool defaults")
 	}
 	for _, tc := range []struct{ key, value string }{
