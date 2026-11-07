@@ -735,8 +735,15 @@ The non-secret review is at most six hours old and includes `baselineCommit`,
 `baselineImage`, `baselinePoolMaxOpen: 8`, `importsFrozen: true`, `verifiedAt` and
 an `evidence` reference, plus `gatewayHttpVerified: true`, `gatewayHttpRevision`
 and `gatewayHttpImage`. Use fresh actual source/image/route evidence, never
-example values. No schema, import, PG limits or connection-pool changes are
-implied by this profile.
+example values. Migrations and models must remain unchanged from `baselineCommit`.
+If `internal/database/database.go` changes, the same fresh review must include
+`startupReview` with exactly `baselineCommit`, `candidateCommit`, `baselineBlob`
+and `candidateBlob`. These must match the baseline source, the checked-out release
+commit, and each commit's Git blob for that file. Review the factory diff and
+rollback compatibility before recording these values; an old PR head does not
+approve a different merge commit. Missing or mismatched approval fails before
+runtime writes. This exception does not authorize migration or model changes.
+No schema, import or PG server-limit changes are implied by this profile.
 
 Three complete smoke rounds verify internal HTTPS and public v1/v2 version reads.
 The Gateway credential stays on private calls and is never sent to public URLs.

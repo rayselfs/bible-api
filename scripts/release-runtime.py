@@ -218,9 +218,27 @@ def check_release_boundaries(template, image, allowed_revisions):
     commit = review['baselineCommit']
     require(re.fullmatch(r'[0-9a-f]{40}', commit) is not None, 'Unknown baseline source commit')
     compatibility = subprocess.run(['git', 'diff', '--quiet', commit, 'HEAD', '--',
-                                    'migrations', 'internal/models/models.go', 'internal/database/database.go'],
+                                    'migrations', 'internal/models/models.go'],
                                    capture_output=True, timeout=15)
-    require(compatibility.returncode == 0, 'Migration/model/DB startup changed; separate rollback review required')
+    require(compatibility.returncode == 0, 'Migration/model changed; separate rollback review required')
+    startup_path = 'internal/database/database.go'
+    startup_diff = subprocess.run(['git', 'diff', '--quiet', commit, 'HEAD', '--', startup_path],
+                                  capture_output=True, timeout=15)
+    require(startup_diff.returncode in (0, 1), 'Cannot verify DB startup source')
+    if startup_diff.returncode == 1:
+        approval = review.get('startupReview', {})
+        def git_object(expression):
+            result = subprocess.run(['git', 'rev-parse', '--verify', expression],
+                                    capture_output=True, text=True, timeout=15)
+            require(result.returncode == 0 and re.fullmatch(r'[0-9a-f]{40}', result.stdout.strip()),
+                    'Cannot resolve reviewed startup object')
+            return result.stdout.strip()
+        require(approval == {
+            'baselineCommit': commit,
+            'candidateCommit': git_object('HEAD^{commit}'),
+            'baselineBlob': git_object(f'{commit}:{startup_path}'),
+            'candidateBlob': git_object(f'HEAD:{startup_path}'),
+        }, 'DB startup changed without exact baseline/candidate commit and blob review')
     now = datetime.datetime.now(datetime.timezone.utc)
     at = datetime.datetime.fromisoformat(review['verifiedAt'])
     require(at.tzinfo is not None and datetime.timedelta(0) <= now-at <= datetime.timedelta(hours=6),
