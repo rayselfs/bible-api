@@ -35,6 +35,16 @@ ingress/Dapr configuration together with the original immutable image/template.
 - `GET /health` - Process liveness (unchanged)
 - `GET /ready` - Process readiness after database startup and migrations; operational endpoint, not publicly routed
 
+Startup migrations acquire a PostgreSQL transaction advisory lock before reading
+history. The existing six migrations and their history commit together; failure
+or a two-minute deadline rolls everything back and startup exits before readiness.
+Concurrent upgraded starts wait on the same lock and replay applied history.
+Before the first rollout, prevent older binaries from starting migrations during
+the transition: they do not honor this lock. Retain the upgraded migrator as the
+minimum migration version after a compatible API rollback. Existing migration
+IDs and data remain unchanged; no historical migration is reapplied or forced.
+Future migration SQL must remain transaction-safe (no concurrent index DDL).
+
 ### Bible Versions
 
 - `GET /api/bible/v1/versions` - Get all available Bible versions
