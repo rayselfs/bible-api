@@ -2,12 +2,15 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hhc/bible-api/internal/utils"
 	"math"
 	"slices"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pgvector/pgvector-go"
@@ -20,9 +23,50 @@ const (
 )
 
 var (
+	ErrVerseNotFound = errors.New("verse not found")
 	// publicVersionList is the list of public Bible version codes accessible without permission
 	publicVersionList = []string{"CUNP-TC", "CUNP-SC", "KJV"}
 )
+
+// UpdateVerseText keeps the edit and its asynchronous vector-work obligation atomic.
+func (s *Store) UpdateVerseText(ctx context.Context, verseID uint, text string) error {
+	db, err := s.DB.DB()
+	if err != nil {
+		return err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var chapterID, versionID uint
+	err = tx.QueryRowContext(ctx, "UPDATE verses SET text=$1 WHERE id=$2 RETURNING chapter_id", text, verseID).Scan(&chapterID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrVerseNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err = tx.QueryRowContext(ctx, "SELECT b.version_id FROM chapters c JOIN books b ON c.book_id=b.id WHERE c.id=$1", chapterID).Scan(&versionID); err != nil {
+		return err
+	}
+	// A waiting concurrent edit must never move the public version timestamp backwards.
+	result, err := tx.ExecContext(ctx, "UPDATE versions SET updated_at=GREATEST(updated_at + interval '1 microsecond',clock_timestamp()) WHERE id=$1", versionID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("verse parent version missing")
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO vector_update_logs(source,reference_id,status) VALUES('api_update_verse',$1,'pending')", strconv.FormatUint(uint64(verseID), 10)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 // Store contains a *gorm.DB instance
 type Store struct {

@@ -765,3 +765,9 @@ HTTP request/trace IDs are logged at ingress but are not injected into request
 context. GORM records have no trace ID and cannot be joined to individual HTTP
 requests. This is HTTP correlation plus independent database lifecycle logging,
 not OTLP export, database spans or complete end-to-end tracing.
+
+### Atomic verse edits
+
+A successful verse text edit commits the text, parent version timestamp, and pending `vector_update_logs` entry in one database transaction. Missing verses return 404; failures before commit roll back all three writes. An interrupted commit response can leave the outcome unknown, while database atomicity still holds. Vector generation stays asynchronous and makes no provider call in the request. Deployment acceptance must separately verify the external vector worker consumes the durable work; this repository does not implement that worker.
+
+The existing public version timestamp remains Unix seconds; multiple edits in one second may share the public timestamp. The durable work schema still references a verse ID. Before deployment, identify and verify the external worker’s latest-text/revision fence under out-of-order processing. This PR proves database atomicity and concurrent durable work creation only; it does not claim worker or cache acceptance.

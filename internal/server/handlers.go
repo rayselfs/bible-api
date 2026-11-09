@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -13,7 +14,6 @@ import (
 	"hhc/bible-api/internal/utils"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 type API struct {
@@ -268,12 +268,13 @@ type UpdateVerseRequest struct {
 // @Param        body body      UpdateVerseRequest true "Update Request"
 // @Success      200  {object}  map[string]interface{} "Success"
 // @Failure      400  {object}  ErrorResponse
+// @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /api/bible/v1/verse/{id} [post]
 func (a *API) HandleUpdateVerse(c *gin.Context) {
 	verseIDStr := c.Param("id")
 	verseID, err := strconv.Atoi(verseIDStr)
-	if err != nil {
+	if err != nil || verseID <= 0 {
 		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid verse ID"})
 		return
 	}
@@ -302,31 +303,13 @@ func (a *API) HandleUpdateVerse(c *gin.Context) {
 		return
 	}
 
-	db := a.store.DB.WithContext(c.Request.Context())
-
-	// Better: Just update text.
-	if err := db.Model(&models.Verses{}).Where("id = ?", verseID).Update("text", req.Text).Error; err != nil {
+	if err := a.store.UpdateVerseText(c.Request.Context(), uint(verseID), req.Text); err != nil {
+		if errors.Is(err, models.ErrVerseNotFound) {
+			c.JSON(http.StatusNotFound, ErrorResponse{Error: "Verse not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to update verse text"})
 		return
-	}
-
-	// Signal version update
-	var result struct{ VersionID uint }
-	db.Raw("SELECT b.version_id FROM verses v JOIN chapters c ON v.chapter_id = c.id JOIN books b ON c.book_id = b.id WHERE v.id = ?", verseID).Scan(&result)
-	if result.VersionID > 0 {
-		db.Model(&models.Versions{}).Where("id = ?", result.VersionID).Update("updated_at", gorm.Expr("CURRENT_TIMESTAMP"))
-	}
-
-	// Async Vector Generation Log
-	// Log the need for vector update
-	vectorLog := models.VectorUpdateLog{
-		Source:      "api_update_verse",
-		ReferenceID: verseIDStr,
-		Status:      "pending",
-	}
-	if err := db.Create(&vectorLog).Error; err != nil {
-		// Just log error, don't fail the request as verse text is updated
-		logger.GetAppLogger().Errorf("Failed to create vector update log for verse %d: %v", verseID, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
