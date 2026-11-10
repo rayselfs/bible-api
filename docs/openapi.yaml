@@ -160,7 +160,7 @@ paths:
               $ref: '#/components/schemas/UpdateVerseRequest'
       responses:
         '200':
-          description: Verse updated.
+          description: Verse text, parent version timestamp, and durable asynchronous vector-work record committed atomically.
           content:
             application/json:
               schema:
@@ -177,8 +177,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '404':
+          description: Verse does not exist; no changes committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
-          description: Verse text could not be updated.
+          description: Could not confirm the atomic edit transaction; an interrupted commit response may leave its outcome unknown.
           content:
             application/json:
               schema:
