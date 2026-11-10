@@ -1,8 +1,10 @@
 package database
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"hhc/bible-api/configs"
 	"hhc/bible-api/internal/logger"
@@ -53,21 +55,29 @@ func buildDSN(cfg *configs.Env) string {
 // Migrate runs database migrations
 func Migrate() {
 	appLogger := logger.GetAppLogger()
-
-	m := gormigrate.New(DB, gormigrate.DefaultOptions, []*gormigrate.Migration{
-		migrations.InitialSchema,
-		migrations.AddHybridSearch,
-		migrations.AddUpdatedAtToVersions,
-		migrations.ChangeVectorDimension,
-		migrations.AddVectorUpdateLogs,
-		migrations.AddLocaleToVersions,
-	})
-
-	if err := m.Migrate(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := migrate(ctx, DB); err != nil {
 		appLogger.Fatalf("Database migration failed: %v", err)
 	}
-
 	appLogger.Info("Database migration completed successfully")
+}
+
+func migrate(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Lock and DDL share one transaction so failure cannot leave partial history or a pooled session lock.
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(721732019261110)").Error; err != nil {
+			return err
+		}
+		return gormigrate.New(tx, gormigrate.DefaultOptions, []*gormigrate.Migration{
+			migrations.InitialSchema,
+			migrations.AddHybridSearch,
+			migrations.AddUpdatedAtToVersions,
+			migrations.ChangeVectorDimension,
+			migrations.AddVectorUpdateLogs,
+			migrations.AddLocaleToVersions,
+		}).Migrate()
+	})
 }
 
 // Close closes the database connection

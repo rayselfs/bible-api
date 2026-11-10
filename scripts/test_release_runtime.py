@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real release CLI against a strict fake Azure boundary."""
 import datetime
+import hashlib
 import contextlib
 import importlib.util
 import sys
@@ -37,7 +38,19 @@ key=' '.join(args[:3])
 if key=='containerapp revision show':
     name=args[args.index('--revision')+1]
     result=data['revisions'][name]
-elif key=='containerapp replica list':result=data['replicas']
+elif key=='containerapp revision deactivate':
+    (p/'deactivated').touch()
+    name=args[args.index('--revision')+1]
+    if data.get('deactivate_denied'):sys.exit(23)
+    if data.get('drain_state'):
+        data['revisions'][name]['properties'].update(data['drain_state'])
+    elif not data.get('drain_pending'):
+        data['revisions'][name]['properties'].update(active=False,replicas=0,runningState='Stopped')
+        data['old_replicas']=[]
+    (p/'azure.json').write_text(json.dumps(data));result={}
+elif key=='containerapp replica list':
+    name=args[args.index('--revision')+1]
+    result=data.get('old_replicas',data['replicas']) if name=='bible-api--old' else data['replicas']
 elif key=='containerapp job list':result=data['jobs']
 elif key=='containerapp job execution':result=data['executions']
 elif args[:2]==['containerapp','show']:
@@ -129,6 +142,10 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.git('init','-q')
         (self.source/'migrations').mkdir()
         (self.source/'migrations/baseline.sql').write_text('SELECT 1;\n')
+        (self.source/'internal/database').mkdir(parents=True)
+        self.startup_path=self.source/'internal/database/database.go'
+        self.old_startup=(ROOT/'scripts/fixtures/database-before-startup-lock.go.txt').read_text()
+        self.startup_path.write_text(self.old_startup)
         self.git('add','.')
         self.git('commit','-qm','synthetic migration baseline')
         self.baseline_commit=self.git('rev-parse','HEAD').stdout.strip()
@@ -147,6 +164,7 @@ class ReleaseRuntimeTests(unittest.TestCase):
             'gatewayHttpImage':'alive.azurecr.io/alive/api-gateway@sha256:'+'c'*64,
             'importsFrozen': True,
             'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'evidence': 'fixture-reviewed-baseline'}
+        self.env['BIBLE_RELEASE_REVIEW']=json.dumps(self.review)
 
     def git(self,*args):
         return subprocess.run(['git','-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
@@ -174,6 +192,110 @@ class ReleaseRuntimeTests(unittest.TestCase):
         self.git('commit','-qm','incompatible migration change')
         self.run_cli('capture',False)
         self.assertFalse((self.path/'updated').exists())
+
+    def startup_transition(self):
+        new=(ROOT/'internal/database/database.go').read_text()
+        self.startup_path.write_text(new)
+        self.git('add','.')
+        self.git('commit','-qm','reviewed startup locking change')
+        self.review['startupTransition']={
+            'baselineSha256':hashlib.sha256(self.old_startup.encode()).hexdigest(),
+            'candidateSha256':hashlib.sha256(new.encode()).hexdigest(),
+            'rollbackPolicy':'forward-only'}
+
+    def test_reviewed_startup_drains_old_revision_before_candidate_and_blocks_old_rollback(self):
+        self.startup_transition()
+        self.prepare_updated_candidate()
+        calls=[json.loads(x) for x in (self.path/'calls').read_text().splitlines()]
+        stop=next(i for i,c in enumerate(calls) if c[:3]==['containerapp','revision','deactivate'])
+        patch=next(i for i,c in enumerate(calls) if c[0]=='rest')
+        self.assertLess(stop,patch)
+        self.assertFalse(self.data['revisions']['bible-api--old']['properties']['active'])
+        self.assertEqual(self.data['old_replicas'],[])
+        self.review.pop('startupTransition')
+        result=self.run_cli('rollback',False)
+        self.assertIn('forward-only',result.stderr)
+        self.assertFalse((self.path/'copied').exists())
+
+    def test_startup_transition_requires_exact_fresh_review(self):
+        self.startup_transition()
+        good=json.loads(json.dumps(self.review))
+        for field,value in [('startupTransition',None),('verifiedAt','2020-01-01T00:00:00+00:00'),
+                            ('baselineImage',NEW_IMAGE)]:
+            with self.subTest(field=field):
+                self.review=json.loads(json.dumps(good));self.review[field]=value
+                self.run_cli('capture',False)
+                self.assertFalse((self.path/'deactivated').exists())
+        for field,value in [('baselineSha256','a'*64),('candidateSha256','b'*64),('rollbackPolicy','previous-image')]:
+            with self.subTest(field=field):
+                self.review=json.loads(json.dumps(good));self.review['startupTransition'][field]=value
+                self.run_cli('capture',False)
+        self.review=good
+        self.run_cli('capture')
+        self.review['verifiedAt']='2020-01-01T00:00:00+00:00'
+        self.run_cli('update',False)
+        self.review=json.loads(json.dumps(good))
+        self.review['startupTransition']['candidateSha256']='d'*64
+        self.run_cli('update',False)
+        self.assertFalse((self.path/'deactivated').exists())
+
+    def test_startup_review_never_allows_migration_or_model_changes(self):
+        self.startup_transition()
+        for filename in ('migrations/baseline.sql','internal/models/models.go'):
+            with self.subTest(filename=filename):
+                target=self.source/filename;target.parent.mkdir(exist_ok=True)
+                target.write_text('changed schema')
+                self.git('add','.');self.git('commit','-qm','schema mutation')
+                self.run_cli('capture',False)
+                self.git('reset','--hard','HEAD~1')
+        self.startup_path.write_text(self.startup_path.read_text().replace('InitialSchema','ChangedSchema'))
+        self.git('add','.');self.git('commit','-qm','registration mutation')
+        self.review['startupTransition']['candidateSha256']=hashlib.sha256(self.startup_path.read_bytes()).hexdigest()
+        self.run_cli('capture',False)
+        self.assertFalse((self.path/'deactivated').exists())
+
+    def test_transition_deactivation_error_cannot_start_candidate_or_restore_old_image(self):
+        self.startup_transition()
+        self.run_cli('capture')
+        self.data['deactivate_denied']=True
+        self.run_cli('update',False)
+        self.assertTrue((self.path/'deactivated').exists())
+        self.assertFalse((self.path/'updated').exists())
+        result=self.run_cli('rollback',False)
+        self.assertIn('forward-only',result.stderr)
+        self.assertFalse((self.path/'copied').exists())
+
+    def test_transition_requires_actual_drain_before_patch(self):
+        self.startup_transition()
+        self.run_cli('capture')
+        spec=importlib.util.spec_from_file_location('runtime_drain',ROOT/'scripts/release-runtime.py')
+        runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+        for state,replicas in [
+                ({'active':True,'replicas':0,'runningState':'Stopped'},[]),
+                ({'active':False,'replicas':1,'runningState':'Stopped'},[]),
+                ({'active':False,'replicas':None,'runningState':'Stopped'},[]),
+                ({'active':False,'replicas':0,'runningState':'Running'},[]),
+                ({'active':False,'replicas':0,'runningState':'Stopped'},[{'name':'terminating'}])]:
+            with self.subTest(state=state,replicas=replicas):
+                self.data['drain_state']=state
+                self.data['old_replicas']=replicas
+                (self.path/'azure.json').write_text(json.dumps(self.data))
+                with mock.patch.dict(os.environ,self.env), contextlib.chdir(self.source), \
+                        mock.patch.object(runtime.time,'monotonic',side_effect=[0,1,601]), \
+                        mock.patch.object(runtime.time,'sleep'):
+                    with self.assertRaisesRegex(ValueError,'drain deadline'): runtime.update()
+                self.assertTrue((self.path/'deactivated').exists())
+                self.assertFalse((self.path/'updated').exists())
+
+    def test_later_unchanged_locked_startup_retains_normal_rollback(self):
+        self.startup_transition()
+        self.review['baselineCommit']=self.git('rev-parse','HEAD').stdout.strip()
+        self.run_cli('capture',False)  # A transition approval cannot be carried forward to a new baseline.
+        self.review.pop('startupTransition')
+        self.prepare_updated_candidate()
+        self.run_cli('rollback')
+        self.assertFalse((self.path/'deactivated').exists())
+        self.assertTrue((self.path/'copied').exists())
 
     def test_zero_activation_requires_current_gateway_http_evidence(self):
         self.run_cli('capture')
@@ -216,7 +338,8 @@ class ReleaseRuntimeTests(unittest.TestCase):
                     mock.patch.object(runtime,'revision',side_effect=[cold,ready]), \
                     mock.patch.object(runtime,'urlopen',return_value=response) as wake, \
                     mock.patch.object(runtime,'immutable',return_value=IMAGE), \
-                    mock.patch.object(runtime,'check_release_boundaries',return_value={'bible-api--old'}):
+                    mock.patch.object(runtime,'check_release_boundaries',return_value={'bible-api--old'}), \
+                    mock.patch.object(runtime,'startup_transition',return_value=None):
                 if superseded:
                     with self.assertRaisesRegex(ValueError,'superseded'): runtime.capture()
                 else:
