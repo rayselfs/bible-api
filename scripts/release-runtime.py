@@ -12,6 +12,13 @@ import sys
 import time
 from urllib.request import urlopen
 
+# One reviewed startup-only transition. New startup changes require a separate source review.
+STARTUP_LOCK_TRANSITION = {
+    'baselineSha256': 'ff36bf0c6e95fdcdd7b0601a6173ff89548196049290a4bcac6b14e3bc4e0426',
+    'candidateSha256': 'f617cca0ebca03985773628edae32ec52203460f67d3d9bd68237d9d2b570eca',
+    'rollbackPolicy': 'forward-only',
+}
+
 RUNTIME = json.loads((Path(__file__).resolve().parent.parent / 'infra/runtime.json').read_text())
 
 
@@ -213,14 +220,32 @@ def exported(**values):
             output.write(f'{key}={value}\n')
 
 
-def check_release_boundaries(template, image, allowed_revisions):
-    review = json.loads(os.environ['BIBLE_RELEASE_REVIEW'])
+def startup_transition(review):
     commit = review['baselineCommit']
     require(re.fullmatch(r'[0-9a-f]{40}', commit) is not None, 'Unknown baseline source commit')
     compatibility = subprocess.run(['git', 'diff', '--quiet', commit, 'HEAD', '--',
-                                    'migrations', 'internal/models/models.go', 'internal/database/database.go'],
+                                    'migrations', 'internal/models/models.go'],
                                    capture_output=True, timeout=15)
-    require(compatibility.returncode == 0, 'Migration/model/DB startup changed; separate rollback review required')
+    require(compatibility.returncode == 0, 'Migration/model changed; separate rollback review required')
+    hashes = []
+    for ref in (commit, 'HEAD'):
+        source = subprocess.run(['git', 'show', ref + ':internal/database/database.go'],
+                                capture_output=True, timeout=15)
+        require(source.returncode == 0, 'Unknown database startup source')
+        hashes.append(hashlib.sha256(source.stdout).hexdigest())
+    if hashes[0] == hashes[1]:
+        require(review.get('startupTransition') is None, 'Stale startup transition review on unchanged source')
+        return None
+    expected = dict(STARTUP_LOCK_TRANSITION)
+    require(hashes == [expected['baselineSha256'], expected['candidateSha256']] and
+            review.get('startupTransition') == expected,
+            'DB startup changed without exact reviewed forward-only transition')
+    return expected
+
+
+def check_release_boundaries(template, image, allowed_revisions):
+    review = json.loads(os.environ['BIBLE_RELEASE_REVIEW'])
+    startup_transition(review)
     now = datetime.datetime.now(datetime.timezone.utc)
     at = datetime.datetime.fromisoformat(review['verifiedAt'])
     require(at.tzinfo is not None and datetime.timedelta(0) <= now-at <= datetime.timedelta(hours=6),
@@ -295,7 +320,8 @@ def capture():
     snapshot = Path(os.environ['RUNNER_TEMP']) / 'bible-rollback-snapshot.json'
     snapshot.write_text(json.dumps({'revision': name, 'image': image, 'readinessPath': health_path,
                                     'templateHash': template_hash(template),
-                                    'configuration': transport(current['configuration'])}))
+                                    'configuration': transport(current['configuration']),
+                                    'startupTransition': startup_transition(json.loads(os.environ['BIBLE_RELEASE_REVIEW']))}))
     exported(PREVIOUS_READY_REVISION=name, PREVIOUS_IMAGE_REF=image, PREVIOUS_READINESS_PATH=health_path,
              PREVIOUS_BIBLE_TRANSPORT='http' if current['configuration'].get('ingress') else 'dapr',
              BIBLE_ROLLBACK_SNAPSHOT=str(snapshot))
@@ -312,10 +338,37 @@ def snapshot():
     return data
 
 
+def drain_startup_predecessor(data):
+    # Deactivation prevents scale/restart of the unlocked predecessor. Do not infer drain from active=false alone.
+    az('containerapp', 'revision', 'deactivate', *target(), '--revision', data['revision'])
+    deadline = time.monotonic() + 600
+    for attempt in range(60):
+        require(time.monotonic() < deadline, 'Startup predecessor drain deadline exceeded; forward-only repair required')
+        current = app()
+        require(current['latestRevisionName'] == data['revision'] and
+                transport(current['configuration']) == data['configuration'],
+                'Startup cutover superseded; forward-only repair required')
+        state = revision(data['revision'])
+        require(template_hash(state['template']) == data['templateHash'] and
+                immutable(state['template']['containers'][0]['image']) == data['image'],
+                'Startup predecessor identity changed')
+        if (state.get('active') is False and state.get('replicas') == 0 and
+                state.get('runningState') in ('Stopped', 'Inactive', 'ScaleTo0', 'ScaledToZero') and
+                az('containerapp', 'replica', 'list', *target(), '--revision', data['revision']) == []):
+            require(check_release_boundaries(state['template'], data['image'], set()) == set(),
+                    'Startup predecessor has not drained')
+            return
+        if attempt < 59:
+            time.sleep(10)
+    raise ValueError('Startup predecessor drain deadline exceeded; forward-only repair required')
+
+
 def update():
     data = snapshot()
     current, baseline = running_baseline(app(), data['revision'], revision(data['revision']))
     require(check_release_boundaries(baseline['template'], data['image'], {data['revision']}) == {data['revision']}, 'Baseline is missing from revision inventory')
+    require(data['startupTransition'] == startup_transition(json.loads(os.environ['BIBLE_RELEASE_REVIEW'])),
+            'Startup review changed after capture')
     require(baseline['active'] is True and baseline['healthState'] == 'Healthy' and baseline['runningState'] in ('Running', 'RunningAtMaxScale'), 'Baseline lost health before update')
     require(current['latestReadyRevisionName'] == current['latestRevisionName'] == data['revision'], 'Baseline changed before update')
     require(transport(current['configuration']) == data['configuration'], 'App-scope configuration changed after capture')
@@ -338,6 +391,8 @@ def update():
     # JSON Merge Patch preserves configuration/secrets; stdin avoids saving environment values or reading secrets via YAML.
     # Persist ownership before a possibly ambiguous network result from the mutation.
     exported(CANDIDATE_REVISION=candidate, RUNTIME_UPDATE_STARTED='true')
+    if data['startupTransition'] is not None:
+        drain_startup_predecessor(data)
     result = patch_runtime(template, data['configuration'])
     require(result.get('properties', {}).get('latestRevisionName') in (None, data['revision'], candidate),
             'Runtime update returned another candidate')
@@ -378,6 +433,8 @@ def wait(name, image, expected_hash=None, previous=None, expected_configuration=
 def rollback():
     require(os.environ.get('RUNTIME_UPDATE_STARTED') == 'true', 'No runtime mutation attempted; preserve healthy baseline')
     data = snapshot()
+    require(data['startupTransition'] is None,
+            'Startup cutover is forward-only; never restart the unlocked predecessor; use a reviewed compatible forward repair')
     candidate = os.environ['CANDIDATE_REVISION']
     current = app()
     require(configuration_matches(current['configuration'], candidate_configuration(data['configuration'])) or

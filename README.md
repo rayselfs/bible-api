@@ -748,11 +748,52 @@ and `gatewayHttpImage`. Use fresh actual source/image/route evidence, never
 example values. No schema, import, PG limits or connection-pool changes are
 implied by this profile.
 
+The one-time J3 startup-lock cutover additionally requires `startupTransition`:
+
+```json
+{
+  "baselineSha256": "ff36bf0c6e95fdcdd7b0601a6173ff89548196049290a4bcac6b14e3bc4e0426",
+  "candidateSha256": "f617cca0ebca03985773628edae32ec52203460f67d3d9bd68237d9d2b570eca",
+  "rollbackPolicy": "forward-only"
+}
+```
+
+These are SHA256 hashes of the exact `internal/database/database.go` bytes at
+`baselineCommit` and the release commit, not image digests. The gate accepts only
+this committed pair; migration files and models must still be unchanged. The
+review must identify the actual serving baseline source/image, the candidate
+source review (including unchanged embedded migration registration/order), current
+Gateway evidence and an independently established import freeze. A missing import
+Job alone does not establish the freeze. Do not use the candidate as its own
+baseline or refresh timestamps without fresh evidence.
+
+This cutover deliberately interrupts service: after baseline smoke and image
+build, the owning release workflow deactivates the exact old revision, then waits
+up to ten minutes for `active=false`, zero replicas, a stopped/zero state and an
+empty replica inventory. The full revision inventory must also be quiet before
+candidate startup. This is an Azure revision restart/drain fence, not a physical
+PostgreSQL session observation; no SQL monitor is required. Unknown/denied
+management results, incomplete drain, stale review or ownership drift fail closed
+without starting the candidate. The existing Single revision mode is retained.
+
+The snapshot records a **forward-only rollback floor before deactivation**.
+After that mutation is attempted, even an ambiguous failure must never reactivate,
+copy or deploy the old unlocked startup image. The failure handler refuses that
+rollback. Keep the old revision inactive and repair forward through a reviewed
+compatible image and the owning CI/CD path; do not bypass capture/review gates to
+recover an outage. A failed first cutover may therefore require a separately
+reviewed recovery change. No automated recovery below this floor is supported.
+After a successful cutover, prepare a fresh review of the healthy migrated
+baseline and omit `startupTransition`; subsequent releases with unchanged startup
+retain normal previous-image rollback. Future startup changes need a separate
+reviewed transition and cannot reuse this exception.
+
 Three complete smoke rounds verify internal HTTPS and public v1/v2 version reads.
 The Gateway credential stays on private calls and is never sent to public URLs.
 HTTP failures fail the release; management errors remain UNKNOWN. An owned failed
-candidate restores the previous immutable image/template and app-scope
-configuration; ownership drift or a new import blocks automatic rollback.
+candidate on an unchanged-startup release restores the previous immutable
+image/template and app-scope configuration; ownership drift or a new import
+blocks automatic rollback.
 
 Disposable PG17 tests retain migration replay, capped pool overlap, cancellation,
 permission/cache and saturation checks. Local readiness and credential tests do
